@@ -56,7 +56,10 @@ spec:
         platform.maal/stage: '{{.stage}}'
         platform.maal/provider: '{{.provider}}'
         platform.maal/component: edge
-        platform.maal/wave: "5"
+        # No platform.maal/wave label here either — same reason as
+        # ./secrets-appset.yaml. "5" would be a legal label where "-1" is not,
+        # but a label that only some appsets carry is worse than one none of
+        # them do: it looks like a selector and selects nothing.
       annotations:
         argocd.argoproj.io/sync-wave: "5"
       finalizers:
