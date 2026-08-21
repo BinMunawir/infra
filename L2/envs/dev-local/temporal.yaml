@@ -1,0 +1,85 @@
+# Temporal — dev-local
+#
+# The workflow spine. Every capability in every Maal service is a Temporal
+# workflow (blueprint.md §1), so nothing else works until this does.
+#
+# The upstream chart bundles Cassandra, Elasticsearch, Prometheus and Grafana by
+# default — a stack far larger than the thing you actually want. All of it is
+# switched off here.
+#
+# ─── the database is EXTERNAL ──────────────────────────────────────────────
+# The cluster runs no Postgres. `host` below points at one you manage yourself;
+# `host.docker.internal` is how a kind node reaches a container on your laptop,
+# which is the dev default. Point it at RDS/Cloud SQL and nothing else changes.
+#
+# YOU MUST CREATE BOTH DATABASES FIRST. Temporal needs `temporal` and
+# `temporal_visibility`, owned by the user below:
+#
+#   CREATE ROLE temporal LOGIN PASSWORD '…';
+#   CREATE DATABASE temporal            OWNER temporal;
+#   CREATE DATABASE temporal_visibility OWNER temporal;
+#
+# The password comes from the store, never from here — see
+# ../../secrets/dev-local/temporal-db.yaml.
+
+server:
+  replicaCount: 1
+
+  config:
+    persistence:
+      default:
+        driver: sql
+        sql:
+          driver: postgres12
+          host: host.docker.internal
+          port: 5432
+          database: temporal
+          user: temporal
+          existingSecret: temporal-db     # chart reads the `password` key
+      visibility:
+        driver: sql
+        sql:
+          driver: postgres12
+          host: host.docker.internal
+          port: 5432
+          database: temporal_visibility
+          user: temporal
+          existingSecret: temporal-db
+
+# Off: the database is external and managed outside Kubernetes. These subcharts
+# would each stand up a second, unmanaged one inside the cluster.
+cassandra:
+  enabled: false
+mysql:
+  enabled: false
+postgresql:
+  enabled: false
+elasticsearch:
+  enabled: false
+
+# Off: L1 has no observability stack, and these would install a second
+# Prometheus with nothing scraping it.
+prometheus:
+  enabled: false
+grafana:
+  enabled: false
+
+# Reachable at https://temporal.maal.local:8080 through the edge Gateway —
+# see ../../edge/dev-local/routes.yaml.
+web:
+  enabled: true
+  replicaCount: 1
+
+schema:
+  # OFF, deliberately. The chart's createDatabase job issues `CREATE DATABASE`,
+  # and the external database's owner role is not a superuser — so the job would
+  # fail with "permission denied to create database" on every sync. Creating the
+  # two databases is a one-time act on the database server, above.
+  createDatabase:
+    enabled: false
+  # ON. These run inside databases that already exist and only need the owner
+  # role, which is exactly what the credential above grants.
+  setup:
+    enabled: true
+  update:
+    enabled: true

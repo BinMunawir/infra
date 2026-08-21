@@ -1,0 +1,125 @@
+{{/*
+One Deployment per entry in .Values.workloads — `cmd/worker`, `cmd/server`,
+`cmd/app`. Same image, different entrypoint, independently scaled.
+*/}}
+{{- $root := . -}}
+{{- range $name, $w := .Values.workloads }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "go-service.name" $root }}-{{ $name }}
+  labels:
+    {{- include "go-service.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  {{- if not (and $w.autoscaling $w.autoscaling.enabled) }}
+  {{/*
+  NOT `$w.replicas | default 1` — sprig's `default` treats 0 as empty, so an
+  explicit `replicas: 0` would silently render as 1. Parking a workload at zero
+  has to actually park it.
+  */}}
+  replicas: {{ if hasKey $w "replicas" }}{{ $w.replicas }}{{ else }}1{{ end }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "go-service.selectorLabels" (dict "root" $root "workloadName" $name) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "go-service.labels" $root | nindent 8 }}
+        {{- include "go-service.selectorLabels" (dict "root" $root "workloadName" $name) | nindent 8 }}
+        {{- with $root.Values.podLabels }}{{ toYaml . | nindent 8 }}{{ end }}
+      annotations:
+        # Roll the pods when non-secret config changes. Secrets deliberately do
+        # NOT trigger a roll: External Secrets rotates them on its own schedule
+        # and restarting every workload on each rotation is worse than a stale
+        # value until the next natural restart.
+        checksum/config: {{ include (print $root.Template.BasePath "/configmap.yaml") $root | sha256sum }}
+        {{- with $root.Values.podAnnotations }}{{ toYaml . | nindent 8 }}{{ end }}
+    spec:
+      serviceAccountName: {{ include "go-service.serviceAccountName" $root }}
+      {{/*
+      A Temporal worker may be mid-activity when SIGTERM arrives; the SDK needs
+      time to drain before the kubelet escalates to SIGKILL. See the note in
+      values.yaml — the 30s default is too short for this workload shape.
+      */}}
+      terminationGracePeriodSeconds: {{ $w.terminationGracePeriodSeconds | default 60 }}
+      {{- with $root.Values.image.pullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $root.Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ $name }}
+          image: {{ include "go-service.image" $root }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          {{- with $w.command }}
+          command: {{ toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $w.args }}
+          args: {{ toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- toYaml $root.Values.securityContext | nindent 12 }}
+          env:
+            {{- include "go-service.env" $root | nindent 12 }}
+            {{- with $w.extraEnv }}{{ toYaml . | nindent 12 }}{{ end }}
+          {{- if and $w.http $w.http.enabled }}
+          ports:
+            - name: http
+              containerPort: {{ $w.http.port | default 9000 }}
+              protocol: TCP
+          {{- end }}
+          {{- with $w.livenessProbe }}
+          livenessProbe: {{ toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $w.readinessProbe }}
+          readinessProbe: {{ toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $w.resources }}
+          resources: {{ toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            # The image ships config/<env>.yml; this ConfigMap replaces that
+            # directory so per-env values are deploy-time, not build-time.
+            - name: config
+              mountPath: {{ $root.Values.config.mountPath }}
+              readOnly: true
+            # readOnlyRootFilesystem is on, so anything that writes needs a
+            # volume. /tmp is the one every Go binary eventually wants.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "go-service.configMapName" $root }}
+        - name: tmp
+          emptyDir: {}
+      {{- with $w.nodeSelector }}
+      nodeSelector: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $w.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $w.affinity }}
+      affinity: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- /*
+      Zone spread. Inert on kind, which has one fake zone, and the thing that
+      keeps a cloud env from putting every replica in the AZ that is about to
+      go away. The selector is filled in from the workload's own labels so a
+      values file only has to state the topology, not repeat the identity.
+      */}}
+      {{- with $w.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- range . }}
+        - maxSkew: {{ .maxSkew | default 1 }}
+          topologyKey: {{ .topologyKey }}
+          whenUnsatisfiable: {{ .whenUnsatisfiable | default "ScheduleAnyway" }}
+          labelSelector:
+            matchLabels:
+              {{- include "go-service.selectorLabels" (dict "root" $root "workloadName" $name) | nindent 14 }}
+        {{- end }}
+      {{- end }}
+{{- end }}

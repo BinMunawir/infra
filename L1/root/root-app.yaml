@@ -1,0 +1,33 @@
+# The app-of-apps root. `bootstrap/up.sh` applies this by hand exactly once;
+# everything downstream — the ApplicationSet, and through it every platform
+# component in every env — reconciles from Git after that.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  source:
+    repoURL: git@github.com:BinMunawir/infra.git
+    targetRevision: main
+    path: L1/platform          # contains appset.yaml + argocd.yaml
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: false        # additive convergence; never auto-delete platform resources
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

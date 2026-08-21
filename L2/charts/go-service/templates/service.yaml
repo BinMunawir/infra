@@ -1,0 +1,29 @@
+{{/*
+A Service per HTTP workload. Temporal workers get none — they hold outbound
+connections to the Temporal frontend and accept nothing inbound.
+*/}}
+{{- $root := . -}}
+{{- range $name, $w := .Values.workloads }}
+{{- if and $w.http $w.http.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "go-service.name" $root }}-{{ $name }}
+  labels:
+    {{- include "go-service.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ $w.http.port | default 9000 }}
+      targetPort: http
+      protocol: TCP
+      # Ambient's ztunnel uses appProtocol to pick its L4 handling; naming it
+      # explicitly avoids a guess based on port number alone.
+      appProtocol: http
+  selector:
+    {{- include "go-service.selectorLabels" (dict "root" $root "workloadName" $name) | nindent 4 }}
+{{- end }}
+{{- end }}

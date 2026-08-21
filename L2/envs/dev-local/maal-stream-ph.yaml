@@ -1,0 +1,97 @@
+# maal-stream-ph — dev-local.  ⚠ PARKED AT ZERO REPLICAS
+#
+# Source: ../../../maalstream_ph  (module github.com/BinMunawir/maalstream_ph)
+#
+# WHY IT IS PARKED
+# The repo's internal/adapters/temporal/client.go dials client.DefaultHostPort
+# with no config path in — it does not import `config` at all, and there is no
+# Temporal block in config/config.go. client.DefaultHostPort is a compile-time
+# constant, so NO ENV VAR CAN REDIRECT IT. In a pod that means dialling itself
+# on localhost:7233, which fails, and temporal.Dial() is followed by
+# log.Fatalf — so the container would exit at startup and CrashLoopBackOff.
+#
+# TO UN-PARK: add a Temporal block to the repo's config (HostPort + Namespace,
+# mirroring ../../../client/config/config.go) and the `if == "" { default }`
+# fallbacks in its temporal adapter. Then set replicas: 1 and uncomment the
+# Temporal values below. Nothing else here changes.
+#
+# It also has no Dockerfile yet — `just images` says so rather than guessing.
+
+image:
+  registry: ""
+  repository: maal/stream-ph
+  tag: dev
+  pullPolicy: IfNotPresent
+
+# ─── workloads ─────────────────────────────────────────────────────────────
+# ONLY the worker. cmd/app is NOT a server despite the name — it is a one-shot
+# workflow starter (ExecuteWorkflow → we.Get → exit), so a Deployment would
+# crash-loop by design. If it is ever needed in-cluster it belongs in a Job.
+# cmd/local is a dev harness and is likewise not deployed.
+workloads:
+  worker:
+    command: ["/app/worker"]
+    replicas: 0          # ← the parking. See the header.
+    http:
+      enabled: false     # Temporal worker: outbound only, binds no port
+    resources:
+      requests: {cpu: 100m, memory: 192Mi}
+      limits: {memory: 512Mi}
+
+# ─── config ────────────────────────────────────────────────────────────────
+config:
+  env: dev
+  mountPath: /app/config
+  values:
+    Service:
+      # DELIBERATE OVERRIDE, not decoration. The repo's own defaults for both
+      # Name and Title are "ledger" — a copy-paste leftover from the service
+      # template. cleanenv resolves YAML above the struct default, so this
+      # ConfigMap is the infra-side correction without touching the repo.
+      Name: maalstream_ph
+      Title: Maal Stream PH
+      Root: "."
+    # Uncomment once the repo has a Temporal config block (see header):
+    # Temporal:
+    #   HostPort: temporal-frontend.maal-temporal.svc.cluster.local:7233
+    #   Namespace: default
+    #
+    # No Srv block: config.CNF.Srv has zero usages in this repo, so setting a
+    # port would imply a listener that does not exist.
+
+# On, because the database credentials ride this service's ExternalSecret.
+secrets:
+  enabled: true
+  data: {}
+
+# ─── database (external) ───────────────────────────────────────────────────
+# The wiring is correct even though the worker is parked: this repo assembles
+# its DSN from the individual DB__* parts, which is what the chart injects.
+# (Its DB_DSN field is declared but never read by dsnBuilder(), unlike client's
+# — wired anyway, so un-parking needs no change here.)
+#
+# Nothing is provisioned by declaring this. The database lives outside the
+# cluster, so a parked service costs an ExternalSecret and nothing else — which
+# is the useful difference from the previous in-cluster arrangement, where a
+# parked worker still ran a Postgres and held a volume.
+#
+#   CREATE ROLE phadmin LOGIN PASSWORD '…';
+#   CREATE DATABASE phdb OWNER phadmin;
+database:
+  enabled: true
+  host: host.docker.internal
+  port: 5432
+  name: phdb              # matches the compose default in maalstream_ph/
+  sslmode: disable
+  credentials:
+    userKey: maal/stream-ph/db/username
+    passwordKey: maal/stream-ph/db/password
+    dsnKey: maal/stream-ph/db/dsn
+
+migrations:
+  enabled: false
+
+mesh:
+  authorizationPolicy:
+    enabled: true
+    allowedPrincipals: []

@@ -1,0 +1,18 @@
+# istiod — dev-local
+#
+# Ambient mode. The profile is set per-env rather than in the catalog so a
+# future env could run sidecars without forking the component list.
+profile: ambient
+
+pilot:
+  # kind runs everything on one laptop; upstream defaults assume a real node.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  autoscaleEnabled: false
+
+# istiod self-signs the mesh CA by default. cert-manager is installed (wave 0)
+# but is NOT yet wired to issue `cacerts` — that is a deliberate later step,
+# noted in ../../Readme.md. Until then mesh mTLS chains to a self-signed root
+# that is regenerated whenever istiod restarts.

@@ -1,0 +1,52 @@
+{{/*
+goose migrations, as an Argo PreSync hook so the schema is in place before the
+new workloads roll.
+
+DISABLED BY DEFAULT, and it must stay that way until the service publishes an
+image containing both the goose binary and internal/adapters/pg/migrations. The
+runtime images built today (see the ledger Dockerfile) copy only the compiled
+binary and config/*.yml, so this Job would run and fail.
+
+The usual fix is to publish the Dockerfile's build stage as a second tag and
+point migrations.image at it.
+*/}}
+{{- if .Values.migrations.enabled }}
+{{- if not .Values.migrations.image }}
+{{- fail "migrations.enabled is true but migrations.image is empty — see the note in templates/migration-job.yaml" }}
+{{- end }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "go-service.name" . }}-migrate
+  labels:
+    {{- include "go-service.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "go-service.labels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "go-service.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ .Values.migrations.image }}
+          command: {{ toYaml .Values.migrations.command | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            {{- include "go-service.env" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

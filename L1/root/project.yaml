@@ -1,0 +1,47 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: platform
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: "L1 platform — GitOps engine + CRD-providing operators (application-agnostic)"
+
+  # Enumerated, not '*'. Every entry corresponds to a repoURL in
+  # platform/appset.yaml or platform/argocd.yaml; adding a component to the
+  # catalog means adding its chart repo here too, and Argo will tell you
+  # plainly if you forget.
+  sourceRepos:
+    - git@github.com:BinMunawir/infra.git
+    - https://charts.jetstack.io
+    - https://istio-release.storage.googleapis.com/charts
+    - https://charts.external-secrets.io
+
+  # Namespaces L1 is allowed to write into — the platform's whole footprint.
+  # L2 gets its own AppProject with its own namespaces; that separation is what
+  # stops an L2 mistake from rewriting the mesh.
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: argocd
+    - server: https://kubernetes.default.svc
+      namespace: istio-system
+    - server: https://kubernetes.default.svc
+      namespace: cert-manager
+    - server: https://kubernetes.default.svc
+      namespace: external-secrets
+    - server: https://kubernetes.default.svc
+      namespace: gateway-system
+
+  # Deliberately '*'. These operators install CRDs, ClusterRoles, webhook
+  # configurations, and APIServices; enumerating cluster-scoped kinds for four
+  # upstream charts is a list that goes stale on every chart bump and fails
+  # closed in confusing ways. The destination + sourceRepo lists above are where
+  # this project's real boundary lives.
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
+
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'

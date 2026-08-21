@@ -1,0 +1,38 @@
+{{/*
+Optional HPA per workload.
+
+NOTE: this needs metrics-server, which kind does not ship and L1 does not
+install. Enabling autoscaling on dev-local produces an HPA stuck at
+<unknown>/80% — harmless, but it will never scale. Cloud envs get metrics-server
+from the provider (EKS addon / GKE built-in).
+
+Temporal workers are usually the wrong thing to scale on CPU — queue backlog is
+the real signal, and that needs a custom metric. Left off by default.
+*/}}
+{{- $root := . -}}
+{{- range $name, $w := .Values.workloads }}
+{{- if and $w.autoscaling $w.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "go-service.name" $root }}-{{ $name }}
+  labels:
+    {{- include "go-service.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "go-service.name" $root }}-{{ $name }}
+  minReplicas: {{ $w.autoscaling.minReplicas | default 1 }}
+  maxReplicas: {{ $w.autoscaling.maxReplicas | default 3 }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $w.autoscaling.targetCPUUtilizationPercentage | default 80 }}
+{{- end }}
+{{- end }}

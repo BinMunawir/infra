@@ -1,0 +1,31 @@
+# cert-manager — dev-local
+#
+# CRDs come from the chart. That is fine while cert-manager is the only thing
+# that owns them; if you ever split CRDs out, `helm.sh/resource-policy: keep`
+# becomes essential — deleting cert-manager CRDs deletes every Certificate in
+# the cluster.
+crds:
+  enabled: true
+  keep: true
+
+resources:
+  requests:
+    cpu: 20m
+    memory: 64Mi
+
+webhook:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+
+cainjector:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 128Mi
+
+# No ClusterIssuer here. Issuers are policy, not platform: ACME/DNS01 needs a
+# real domain and cloud credentials, and a self-signed issuer is an L2 concern.
+# L1 installs the *capability* only — same rule as the Gateway API CRDs, which
+# create no Gateway.

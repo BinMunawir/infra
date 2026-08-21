@@ -1,0 +1,119 @@
+# L2/apps/deps-appset.yaml — the third-party applications the Maal services run
+# against: Temporal, Keycloak, Hyperswitch.
+#
+# These are instances, not capabilities — L1 installs the operators, L2 declares
+# what runs. The split is the whole reason L1 stays reusable under a different
+# product.
+#
+# Their databases are EXTERNAL. Each chart is pointed at a host in ../envs/, and
+# its credentials come from an ExternalSecret in ../secrets/<env>/. Nothing here
+# creates a database, and the cluster stores no database state.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: maal-deps
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+
+  generators:
+    - matrix:
+        generators:
+          - git:
+              repoURL: git@github.com:BinMunawir/infra.git
+              revision: main
+              files:
+                - path: L2/envs/*.yaml
+
+          - list:
+              elements:
+                # The workflow spine. Every capability in every Go service is a
+                # Temporal workflow (blueprint.md §1), so this comes up first.
+                - app: temporal
+                  chart: temporal
+                  repoURL: https://go.temporal.io/helm-charts
+                  version: 1.6.0
+                  namespace: maal-temporal
+                  wave: "0"
+
+                # Identity. maal_business provisions organizations and users
+                # here through its keycloak port.
+                - app: keycloak
+                  chart: keycloakx
+                  repoURL: https://codecentric.github.io/helm-charts
+                  version: 7.2.3
+                  namespace: maal-keycloak
+                  wave: "0"
+
+                # PARKED — hyperswitch is removed from this catalog, not merely
+                # disabled, for the same reason maal-ledger is removed from the
+                # service catalog: it cannot work as configured, and an
+                # Application that is permanently red teaches everyone to stop
+                # reading the dashboard.
+                #
+                # hyperswitch-app is a stack (router, card vault, key manager,
+                # control centre), it is PCI-adjacent, and its Postgres is
+                # configured inside the chart rather than pointed at an external
+                # host — so adopting it is a deliberate session, not a values
+                # tweak. The reasoning and the re-entry path are kept in
+                # ../envs/dev-local/hyperswitch.yaml, which is inert until this
+                # element comes back:
+                #
+                #   - app: hyperswitch
+                #     chart: hyperswitch-app
+                #     repoURL: https://juspay.github.io/hyperswitch-helm
+                #     version: 1.1.8
+                #     namespace: maal-hyperswitch
+                #     wave: "1"
+
+  template:
+    metadata:
+      name: '{{.stage}}-{{.provider}}-{{.app}}'
+      labels:
+        maal/stage: '{{.stage}}'
+        maal/provider: '{{.provider}}'
+        maal/dep: '{{.app}}'
+        maal/wave: '{{.wave}}'
+      annotations:
+        argocd.argoproj.io/sync-wave: '{{.wave}}'
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: maal
+
+      sources:
+        - repoURL: '{{.repoURL}}'
+          chart: '{{.chart}}'
+          targetRevision: '{{ dig "versions" .app .version . }}'
+          helm:
+            releaseName: '{{.app}}'
+            ignoreMissingValueFiles: true
+            valueFiles:
+              - $values/L2/envs/{{.stage}}-{{.provider}}/{{.app}}.yaml
+
+        - repoURL: git@github.com:BinMunawir/infra.git
+          targetRevision: main
+          ref: values
+
+      destination:
+        server: '{{.destination.server}}'
+        namespace: '{{.namespace}}'
+
+      syncPolicy:
+        automated:
+          prune: false
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+        managedNamespaceMetadata:
+          labels:
+            istio.io/dataplane-mode: ambient
+            maal/dep: '{{.app}}'
+        retry:
+          limit: 10
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 3m

@@ -1,0 +1,50 @@
+# What is reachable from outside — dev-local.
+#
+# Each HTTPRoute lives in the namespace of the service it fronts, so its
+# backendRef is same-namespace and no ReferenceGrant is needed. The Application
+# syncing this directory targets maal-edge; Argo applies each object to the
+# namespace it declares, which the AppProject permits.
+#
+# Nothing here fronts a Maal Go service. maal-business is a Temporal worker with
+# no inbound port at all, and maal-ledger — the only one that serves HTTP — is
+# parked. When a service does need to be reachable, add a route beside it here
+# and a hostname to ../certificate.yaml.
+#
+# Resolve these locally:
+#   just hosts        # prints the /etc/hosts lines
+---
+# Keycloak's admin console and OIDC endpoints.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: keycloak
+  namespace: maal-keycloak
+spec:
+  parentRefs:
+    - name: maal-edge
+      namespace: maal-edge
+      sectionName: https
+  hostnames:
+    - keycloak.maal.local
+  rules:
+    - backendRefs:
+        - name: keycloak-keycloakx-http
+          port: 80
+---
+# Temporal Web — workflow histories, which is the only way to debug a worker.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: temporal-web
+  namespace: maal-temporal
+spec:
+  parentRefs:
+    - name: maal-edge
+      namespace: maal-edge
+      sectionName: https
+  hostnames:
+    - temporal.maal.local
+  rules:
+    - backendRefs:
+        - name: temporal-web
+          port: 8080

@@ -1,0 +1,35 @@
+# L2/envs/dev-local.yaml — one cell on the same {stage} × {provider} matrix L1
+# uses. The filename is the identity, and the sibling directory of the same name
+# holds per-application values.
+
+stage: dev
+provider: local
+
+destination:
+  server: https://kubernetes.default.svc
+
+# ─── mirror of the L0 contract ─────────────────────────────────────────────
+# Same reasoning as L1: Argo only reads Git, and L0's contract.json is generated
+# and gitignored. `just verify` fails if this copy and the live cluster differ.
+#
+# storageClass matters more here than in L1 — every CNPG Cluster L2 declares
+# names it, and a wrong value means a Postgres that never binds a volume.
+contract:
+  storageClass: standard
+  lbEndpoint: "127.0.0.1:8080"
+
+# ─── service-level environment ─────────────────────────────────────────────
+# The Go services have their own env vocabulary (dev | stg | prod) from
+# config/<env>.yml — a DIFFERENT axis from {stage}-{provider}. `dev-aws` would
+# also set serviceEnv: dev. Keeping the two names apart avoids the assumption
+# that one cluster equals one service environment.
+serviceEnv: dev
+
+# ─── secrets backing ───────────────────────────────────────────────────────
+# Which provider the ClusterSecretStore in L2/secrets/<env>/ uses. Locally the
+# `fake` provider serves literals from the store spec — there is no cloud secret
+# manager reachable from kind, and no workload identity to reach one with.
+secretProvider: fake
+
+# ─── per-app chart version overrides ───────────────────────────────────────
+versions: {}

@@ -1,0 +1,33 @@
+# The L2 app-of-apps root. Applied once by bootstrap/up.sh; everything below —
+# the secret stores, the databases, the dependencies, and the services — comes
+# from the four ApplicationSets in L2/apps.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: maal-root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: maal
+  source:
+    repoURL: git@github.com:BinMunawir/infra.git
+    targetRevision: main
+    path: L2/apps
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

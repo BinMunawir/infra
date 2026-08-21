@@ -1,0 +1,131 @@
+# L2/apps/services-appset.yaml — the Maal Go services.
+#
+# Every service is the same local chart (charts/go-service) with a different
+# values file. Adding a service is one catalog entry plus one values file; it
+# never touches a template.
+#
+# Namespace per service, labelled for the ambient mesh by Argo rather than by
+# the chart — the namespace is not the chart's to own.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: maal-services
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+
+  generators:
+    - matrix:
+        generators:
+          - git:
+              repoURL: git@github.com:BinMunawir/infra.git
+              revision: main
+              files:
+                - path: L2/envs/*.yaml
+
+          # ── the service catalog ────────────────────────────────────────
+          # `repo` is the sibling working directory the image is built from —
+          # informational, but it is the only place the mapping from a running
+          # Deployment back to a source tree is written down.
+          #
+          # PARKING, and which mechanism to use:
+          #
+          #   Removed from this catalog — the service CANNOT work at all, and
+          #   no amount of configuration fixes it. No Application is generated.
+          #   Its values file stays in ../envs/ with the reason at the top.
+          #
+          #   `replicas: 0` in the values file — the manifests are right but
+          #   the repo or its image is not ready. The Application syncs green
+          #   and runs no pods, so Argo shows the wiring rather than
+          #   advertising a crash loop as the normal state.
+          #
+          # Currently parked:
+          #   maal-ledger     removed  — hardcodes TigerBeetle at 127.0.0.1:4000
+          #                              and panics; needs a TigerBeetle instance
+          #                              and a config block in the repo
+          #   maal-stream-ph  0 replicas — its Temporal client hardcodes
+          #                              client.DefaultHostPort, so a pod would
+          #                              dial itself and log.Fatalf at startup
+          - list:
+              elements:
+                - service: maal-business
+                  repo: client                 # module github.com/BinMunawir/maal_business
+                  namespace: maal-business
+                  wave: "1"
+
+                - service: maal-stream-ph
+                  repo: maalstream_ph          # module github.com/BinMunawir/maalstream_ph
+                  namespace: maal-stream-ph
+                  wave: "1"
+
+  template:
+    metadata:
+      name: '{{.stage}}-{{.provider}}-{{.service}}'
+      labels:
+        maal/stage: '{{.stage}}'
+        maal/provider: '{{.provider}}'
+        maal/service: '{{.service}}'
+        maal/wave: '{{.wave}}'
+      annotations:
+        argocd.argoproj.io/sync-wave: '{{.wave}}'
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: maal
+
+      sources:
+        - repoURL: git@github.com:BinMunawir/infra.git
+          targetRevision: main
+          path: L2/charts/go-service
+          helm:
+            releaseName: '{{.service}}'
+            ignoreMissingValueFiles: true
+            valueFiles:
+              # Chart defaults, then the service's values for this env. A
+              # service with no file gets chart defaults, which will not be a
+              # working deployment — `just check-envs` lists the gaps.
+              - $values/L2/envs/{{.stage}}-{{.provider}}/{{.service}}.yaml
+
+        - repoURL: git@github.com:BinMunawir/infra.git
+          targetRevision: main
+          ref: values
+
+      destination:
+        server: '{{.destination.server}}'
+        namespace: '{{.namespace}}'
+
+      syncPolicy:
+        automated:
+          # PRUNE IS ON HERE, and only here. Everything a service owns is
+          # derived from its values file — Deployment, ConfigMap,
+          # ServiceAccount, ExternalSecret, AuthorizationPolicy — and all of it
+          # is reconstructible from Git. Without prune, renaming a workload key
+          # leaves the old Deployment running forever with no signal, which is
+          # the drift this layer is least able to notice.
+          #
+          # The layers that hold or gate state keep prune:false: the platform
+          # (L1), the secret stores, and the edge. And no database is at risk
+          # either way — every Postgres this platform uses is external and
+          # outside the cluster's reach entirely.
+          #
+          # To exempt one resource, annotate it:
+          #   argocd.argoproj.io/sync-options: Prune=false
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+        # Enrol the namespace in the ambient mesh at creation. Doing it here
+        # rather than in the chart keeps namespace ownership with the thing
+        # that creates the namespace.
+        managedNamespaceMetadata:
+          labels:
+            istio.io/dataplane-mode: ambient
+            maal/service: '{{.service}}'
+        retry:
+          limit: 10
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 3m

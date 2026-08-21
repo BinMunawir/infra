@@ -1,0 +1,98 @@
+# Keycloak — dev-local
+#
+# The identity provider. maal_business holds only the `sub` reference; login,
+# credentials, and sessions are Keycloak's, not the domain's (client/service.md §0).
+#
+# ─── the database is EXTERNAL ──────────────────────────────────────────────
+# Same rule as Temporal: the cluster runs no Postgres. Create the database and
+# role on whatever server you point KC_DB_URL_HOST at:
+#
+#   CREATE ROLE keycloak LOGIN PASSWORD '…';
+#   CREATE DATABASE keycloak OWNER keycloak;
+#
+# Credentials come from ../../secrets/dev-local/keycloak-db.yaml, whose Secret
+# keys are named for the env vars below so there is nothing to translate.
+
+replicas: 1
+
+# `start --optimized` skips the build step, which requires the image to have
+# been built with the same feature flags. Locally we want the plain `start`
+# so the DB vendor is resolved at boot.
+command:
+  - "/opt/keycloak/bin/kc.sh"
+  - "--verbose"
+  - "start"
+  - "--http-enabled=true"
+  - "--http-port=8080"
+  - "--hostname-strict=false"
+
+extraEnv: |
+  - name: KC_DB
+    value: postgres
+  - name: KC_DB_URL_HOST
+    value: host.docker.internal
+  - name: KC_DB_URL_DATABASE
+    value: keycloak
+  - name: KC_DB_USERNAME
+    valueFrom:
+      secretKeyRef:
+        name: keycloak-db
+        key: KC_DB_USERNAME
+  - name: KC_DB_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: keycloak-db
+        key: KC_DB_PASSWORD
+  - name: KC_HEALTH_ENABLED
+    value: "true"
+  - name: KC_METRICS_ENABLED
+    value: "true"
+  # Terminating TLS at the edge Gateway means Keycloak sees plaintext and must
+  # be told to trust the forwarded proto, or it builds redirect URLs on http://
+  # and the OIDC flow breaks in a way that looks like a client misconfiguration.
+  - name: KC_PROXY_HEADERS
+    value: xforwarded
+  # Initial admin. Keycloak 26 reads KC_BOOTSTRAP_ADMIN_*; the KEYCLOAK_ADMIN_*
+  # pair is the pre-26 spelling, kept alongside so an image bump in either
+  # direction still boots with an admin. The Secret carries both keys — see
+  # ../../secrets/dev-local/keycloak-admin.yaml.
+  - name: KC_BOOTSTRAP_ADMIN_USERNAME
+    valueFrom:
+      secretKeyRef:
+        name: maal-keycloak-admin
+        key: KC_BOOTSTRAP_ADMIN_USERNAME
+  - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: maal-keycloak-admin
+        key: KC_BOOTSTRAP_ADMIN_PASSWORD
+  - name: KEYCLOAK_ADMIN
+    valueFrom:
+      secretKeyRef:
+        name: maal-keycloak-admin
+        key: KEYCLOAK_ADMIN
+  - name: KEYCLOAK_ADMIN_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: maal-keycloak-admin
+        key: KEYCLOAK_ADMIN_PASSWORD
+
+# Off: the database is external. This subchart would create a second one.
+postgresql:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 512Mi
+  limits:
+    memory: 1Gi
+
+health:
+  enabled: true
+
+# No Ingress. The edge is a Gateway API Gateway — see
+# ../../edge/dev-local/gateway.yaml — and Keycloak is reachable at
+# https://keycloak.maal.local:8080 once `just hosts` is in place.
+ingress:
+  enabled: false

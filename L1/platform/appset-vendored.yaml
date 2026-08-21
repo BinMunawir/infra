@@ -1,0 +1,80 @@
+# L1/platform/appset-vendored.yaml — platform components that are vendored
+# manifests rather than Helm charts.
+#
+# Same {stage}×{provider} matrix as appset.yaml; only the source shape differs
+# (a path in this repo instead of a chart in an upstream repo). Two generators
+# rather than one conditional template, because a template that branches on
+# whether `.chart` is set is harder to read than two honest lists.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: platform-vendored
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+
+  generators:
+    - matrix:
+        generators:
+          - git:
+              repoURL: git@github.com:BinMunawir/infra.git
+              revision: main
+              files:
+                - path: L1/envs/*.yaml
+
+          - list:
+              elements:
+                # Kubernetes Gateway API CRDs. istiod cannot provision a
+                # gateway without these, and they are cluster-scoped — which is
+                # why they live in L1 rather than L2. Keeping them here lets
+                # L2's AppProject stay free of CRD permissions.
+                #
+                # Bump: change `version`, re-run `just vendor-gateway-api`.
+                # NOTE the key is `manifestPath`, not `path`. The git file
+                # generator injects its own `path` object (`.path.basename`,
+                # `.path.filename`, …), and a list key of the same name shadows
+                # it — silently, and only because the list generator happens to
+                # come second in the matrix. Renaming keeps both visible.
+                - component: gateway-api
+                  manifestPath: L1/vendor/gateway-api
+                  version: v1.6.1
+                  namespace: gateway-system
+                  wave: "0"
+
+  template:
+    metadata:
+      name: '{{.stage}}-{{.provider}}-{{.component}}'
+      labels:
+        platform.maal/stage: '{{.stage}}'
+        platform.maal/provider: '{{.provider}}'
+        platform.maal/component: '{{.component}}'
+        platform.maal/wave: '{{.wave}}'
+      annotations:
+        argocd.argoproj.io/sync-wave: '{{.wave}}'
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform
+      source:
+        repoURL: git@github.com:BinMunawir/infra.git
+        targetRevision: main
+        path: '{{.manifestPath}}'
+        directory:
+          recurse: false
+      destination:
+        server: '{{.destination.server}}'
+        namespace: '{{.namespace}}'
+      syncPolicy:
+        automated:
+          prune: false
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true   # CRD-sized manifests
+        retry:
+          limit: 10
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 3m

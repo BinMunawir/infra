@@ -1,0 +1,67 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: maal
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: "L2 — the Maal product: services, their databases, and the apps they run against"
+
+  sourceRepos:
+    - git@github.com:BinMunawir/infra.git
+    - https://go.temporal.io/helm-charts
+    - https://codecentric.github.io/helm-charts
+    # Hyperswitch is parked — removed from apps/deps-appset.yaml, not merely
+    # disabled. Its chart repos stay listed but commented so re-enabling is a
+    # catalog change plus uncommenting, not a rediscovery:
+    #   - https://juspay.github.io/hyperswitch-helm
+    #   - https://charts.bitnami.com/bitnami    # its bundled Redis
+
+  # Namespace per service. A new service means a new entry here as well as in
+  # apps/services-appset.yaml — Argo fails the sync with a clear message if you
+  # add one and forget the other, which is the intended tripwire.
+  destinations:
+    # Where maal-root itself lives, and where it writes the four
+    # ApplicationSets. WITHOUT THIS ENTRY maal-root cannot sync at all — Argo
+    # rejects it with "destination {https://kubernetes.default.svc argocd} is
+    # not permitted in project 'maal'" and no L2 Application is ever generated.
+    - server: https://kubernetes.default.svc
+      namespace: argocd
+    - server: https://kubernetes.default.svc
+      namespace: maal-temporal
+    - server: https://kubernetes.default.svc
+      namespace: maal-keycloak
+    - server: https://kubernetes.default.svc
+      namespace: maal-hyperswitch
+    - server: https://kubernetes.default.svc
+      namespace: maal-business
+    # The edge: Gateway, HTTPRoutes, and the cert-manager Issuer that terminates
+    # TLS in front of them.
+    - server: https://kubernetes.default.svc
+      namespace: maal-edge
+    # Parked — maal-ledger is not in the service catalog (see
+    # ../apps/services-appset.yaml). Kept so re-enabling is a one-line catalog
+    # change; an unused destination grants nothing on its own.
+    - server: https://kubernetes.default.svc
+      namespace: maal-ledger
+    - server: https://kubernetes.default.svc
+      namespace: maal-stream-ph
+    # Where the ClusterSecretStore Application is tracked.
+    - server: https://kubernetes.default.svc
+      namespace: external-secrets
+
+  # THE BOUNDARY. L2 may not create cluster-scoped resources — no CRDs, no
+  # ClusterRoles, no webhooks. That is why the Gateway API CRDs went into L1:
+  # keeping this list empty is what stops an L2 mistake from reaching the mesh
+  # or the operators.
+  #
+  # The one exception is ClusterSecretStore, which is cluster-scoped by design
+  # and is the single object L2 legitimately owns above namespace level.
+  clusterResourceWhitelist:
+    - group: external-secrets.io
+      kind: ClusterSecretStore
+
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'

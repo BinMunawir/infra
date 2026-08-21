@@ -1,0 +1,21 @@
+# L0/local/kind.yaml — the local cluster topology.
+#
+# The extraPortMapping below IS the `lbEndpoint` contract output: host
+# 127.0.0.1:8080 lands on NodePort 30080 inside the cluster, which is where L2's
+# edge gateway will bind. Changing either number changes the contract, so change
+# ../contract.md and L0/local/up.sh in the same commit.
+apiVersion: kind.x-k8s.io/v1alpha4
+kind: Cluster
+name: maal-local
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 8080
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+  - role: worker
+    image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+  - role: worker
+    image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5

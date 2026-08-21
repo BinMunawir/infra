@@ -1,0 +1,18 @@
+# Remote state for L0/gcp. Copy to backend.hcl and edit; backend.hcl is
+# gitignored because it names a bucket and a project.
+#
+#   tofu init -backend-config=backend.hcl
+#
+# Create the bucket BEFORE the first init — a state backend cannot bootstrap
+# itself — and turn on versioning, which is the only thing that makes a
+# corrupted state recoverable:
+#
+#   gcloud storage buckets create gs://maal-tfstate \
+#     --project=<project-id> --location=me-central1 \
+#     --uniform-bucket-level-access
+#   gcloud storage buckets update gs://maal-tfstate --versioning
+#
+# GCS locks state server-side, so there is nothing else to provision.
+
+bucket = "maal-tfstate"
+prefix = "L0/gcp"

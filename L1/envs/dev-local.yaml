@@ -1,0 +1,32 @@
+# L1/envs/dev-local.yaml — one environment on the {stage} × {provider} matrix.
+#
+# The filename IS the identity: `<stage>-<provider>`. The ApplicationSet's git
+# generator globs this directory, so adding `staging-aws.yaml` next to this file
+# is the entire act of adding an environment. Per-component Helm values for this
+# env live in the sibling directory of the same name, `envs/dev-local/`.
+
+stage: dev
+provider: local
+
+# Where this env's platform gets installed. `in-cluster` is the Argo hub itself;
+# a remote env names a cluster registered with `argocd cluster add`, and only
+# this line changes.
+destination:
+  server: https://kubernetes.default.svc
+
+# ─── mirror of the L0 contract ─────────────────────────────────────────────
+# L0 publishes these in contract.json, which is generated and gitignored — so
+# Argo, which only ever reads Git, cannot see it. They are therefore copied here
+# and `bootstrap/up.sh` FAILS if the live contract disagrees with these values.
+# Git stays the source of truth; L0 stays the thing being checked against it.
+contract:
+  storageClass: standard
+  lbEndpoint: "127.0.0.1:8080"
+
+# ─── per-env chart version overrides ───────────────────────────────────────
+# Empty means "use the catalog default in platform/appset.yaml". Pinning one
+# component here is how a new Istio reaches dev without touching prod:
+#
+#   versions:
+#     istiod: 1.31.0
+versions: {}

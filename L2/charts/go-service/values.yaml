@@ -1,0 +1,235 @@
+# go-service — the values contract.
+#
+# This file is the documentation. Every key below is the default; a service's
+# values file in L2/envs/<env>/<service>.yaml overrides only what differs.
+#
+# The chart is built around three facts from the Go Service Standard
+# (client/blueprint.md):
+#   1. One image, several entrypoints — `cmd/worker`, `cmd/server`, `cmd/app`.
+#      So a service is N workloads, not one Deployment.
+#   2. Config precedence is env var → config/<ENV>.yml → struct default.
+#      So non-secret config is a ConfigMap mounted over config/, and ENV picks
+#      the file.
+#   3. "Keep secrets in env vars only."
+#      So secrets are never in the ConfigMap — they arrive as env vars from a
+#      Secret that External Secrets materialises.
+
+# Service name. Defaults to the release name; set it when the Argo Application
+# name and the service name should differ.
+nameOverride: ""
+
+# ─── image ─────────────────────────────────────────────────────────────────
+image:
+  # Registry-qualified in cloud (ECR/GAR). Empty registry + IfNotPresent is the
+  # local flow: `docker build` then `kind load docker-image`, no registry at all.
+  registry: ""
+  repository: maal/example
+  # MUTABLE TAG WARNING. `dev` is convenient locally and a trap everywhere else:
+  # the Deployment spec does not change when the image behind the tag does, so
+  # Argo reports Synced and the old pods keep running. Locally, `just restart
+  # <service>` after `just images`. In cloud, use an immutable tag — a commit
+  # SHA or a digest — and let the values change be what triggers the rollout.
+  tag: "dev"
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# ─── workloads ─────────────────────────────────────────────────────────────
+# One entry per `cmd/*` entrypoint you want running. The key becomes the
+# workload suffix: `maal-business` + `worker` -> Deployment maal-business-worker.
+#
+# `http.enabled` decides whether this workload gets a Service and HTTP probes.
+# A Temporal worker has no inbound port, so it gets neither — which is exactly
+# why probes are per-workload and not per-service.
+#
+# PARKING: `replicas: 0` deploys the workload's config, Service and policies but
+# runs no pods. Use it when the manifests are right but the service repo is not
+# ready — the Application syncs green instead of advertising a crash loop as the
+# normal state. A service that cannot work at all is removed from the catalog in
+# L2/apps/services-appset.yaml instead.
+#
+# Only long-running processes belong here. A `cmd/` that runs once and exits (a
+# workflow starter, a code generator, a dev harness) is a Job, not a Deployment
+# — deploying one produces a crash loop by design.
+workloads:
+  worker:
+    command: ["/app/worker"]
+    args: []
+    replicas: 1
+    http:
+      enabled: false
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {memory: 512Mi}
+    # A Temporal worker is healthy if the process is up and its poller is
+    # connected; there is no HTTP endpoint to ask. Process liveness is all
+    # Kubernetes can honestly check here.
+    livenessProbe: {}
+    readinessProbe: {}
+    # A Temporal worker holds long-poll connections and may be mid-activity when
+    # SIGTERM arrives. Kubernetes' 30s default kills it before the SDK finishes
+    # draining, which orphans the activity until its timeout expires and the
+    # workflow retries it somewhere else. 60s covers a normal drain; raise it
+    # for a service with long activities, and keep it below the node's
+    # shutdownGracePeriod.
+    terminationGracePeriodSeconds: 60
+    autoscaling:
+      enabled: false
+    extraEnv: []
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    # Spread replicas across zones. Inert on kind (one fake zone — see
+    # L0/contract.md) and load-bearing on any real cluster, which is why it is
+    # declared here rather than remembered at migration time. ScheduleAnyway,
+    # not DoNotSchedule: a spread constraint that can block scheduling turns a
+    # zone outage into an outage.
+    topologySpreadConstraints: []
+      # - maxSkew: 1
+      #   topologyKey: topology.kubernetes.io/zone
+      #   whenUnsatisfiable: ScheduleAnyway
+
+# ─── config (non-secret) ───────────────────────────────────────────────────
+config:
+  # Selects config/<env>.yml inside the image AND names the ConfigMap key.
+  # dev | stg | prod — these are the service's own env names, which are NOT the
+  # same axis as L1's {stage}-{provider}. `dev-local` and `dev-aws` both set
+  # env: dev here.
+  env: dev
+
+  # Where the image expects its config directory. The ledger Dockerfile uses
+  # WORKDIR /app and copies config/*.yml to /app/config, and SERVICE__ROOT
+  # defaults to ".", so /app/config is the path the binary reads.
+  mountPath: /app/config
+
+  # Rendered into config/<env>.yml verbatim. Non-secret values only — this
+  # becomes a ConfigMap, which is world-readable to anyone with namespace get.
+  # Keys are PascalCase to match the cleanenv `yaml:` tags in config.go.
+  values: {}
+    # Service:
+    #   Name: maal_business
+    # Temporal:
+    #   HostPort: temporal-frontend.maal-temporal.svc.cluster.local:7233
+    #   Namespace: default
+
+  # Plain env vars applied to every workload. Non-secret only.
+  env_: {}
+    # SERVICE__ROOT: "."
+
+# ─── secrets ───────────────────────────────────────────────────────────────
+# Rendered as an ExternalSecret (the CRD comes from L1's external-secrets
+# operator). Every entry becomes an env var on every workload, sourced from the
+# generated Secret — never from the ConfigMap, never from a file in Git.
+secrets:
+  enabled: false
+
+  # Store to pull from. ClusterSecretStore rather than SecretStore because
+  # namespace-per-service would otherwise mean one store object per service,
+  # all identical. L2 creates one per env: `fake` locally, AWS/GCP Secret
+  # Manager in cloud. See L2/Readme.md.
+  storeRef:
+    name: maal-secret-store
+    kind: ClusterSecretStore
+
+  refreshInterval: 1h
+
+  # envVarName: remoteKey  (the key as it exists in the backing store)
+  data: {}
+    # KEYCLOAK__ADMIN_TOKEN: maal/keycloak/admin-token
+
+# ─── database (external) ───────────────────────────────────────────────────
+# The cluster runs no database. Every Postgres is external and managed outside
+# Kubernetes — RDS, Cloud SQL, or a container on your laptop in dev — so this
+# block describes how to REACH one, never how to create one.
+#
+# The split follows the same rule as everything else here: the address is not a
+# secret and lives in Git; the credentials are secrets and come from the env's
+# store through External Secrets. Nothing below ever holds a password.
+#
+# Reaching a laptop database from inside kind: the host is reachable at
+# `host.docker.internal` from the kind nodes, which is the dev-local default in
+# the service values files.
+database:
+  enabled: false
+
+  # Non-secret connection facts, rendered as plain env vars.
+  host: ""
+  port: 5432
+  name: ""
+  # disable | require | verify-ca | verify-full. `require` everywhere real;
+  # dev-local against a laptop container is the only place `disable` belongs.
+  sslmode: require
+
+  # Credentials, as remote keys in the env's ClusterSecretStore. Each non-empty
+  # entry becomes an entry in this service's ExternalSecret AND an env var on
+  # every workload. Requires `secrets.enabled: true`; the chart fails to render
+  # otherwise rather than producing a workload with no credentials.
+  #
+  #   userKey     -> DB__USER
+  #   passwordKey -> DB__PASSWORD
+  #   dsnKey      -> DB_DSN
+  #
+  # Set an entry to "" to skip it. A service that reads only DB_DSN needs just
+  # dsnKey; one that assembles its own DSN from parts needs the other two.
+  credentials:
+    userKey: ""
+    passwordKey: ""
+    dsnKey: ""
+
+# ─── migrations ────────────────────────────────────────────────────────────
+# goose migrations live in the service repo at internal/adapters/pg/migrations.
+# The runtime image built by the service Dockerfile contains NEITHER goose nor
+# the migrations directory — so this Job cannot work until the service ships an
+# image that carries both. Left off, and documented, rather than quietly broken.
+migrations:
+  enabled: false
+  # Image carrying goose + the migrations dir. Often the build stage of the
+  # service's own Dockerfile, published as a second tag.
+  image: ""
+  command: ["goose", "-dir=/migrations", "postgres", "$(DB_DSN)", "up"]
+  backoffLimit: 3
+
+# ─── mesh ──────────────────────────────────────────────────────────────────
+mesh:
+  # Ambient enrolment is a namespace label, applied by Argo via
+  # managedNamespaceMetadata (see L2/services/appset.yaml) — not by this chart,
+  # because the namespace is not this chart's to own.
+  #
+  # A default-deny AuthorizationPolicy plus explicit allows. Ambient enforces
+  # these at ztunnel for L4; L7 rules would need a waypoint, which no service
+  # has yet.
+  authorizationPolicy:
+    enabled: true
+    # Principals allowed to call this service, as
+    # cluster.local/ns/<ns>/sa/<serviceaccount>. Empty = deny all inbound,
+    # which is correct for a Temporal worker: it makes only outbound calls.
+    allowedPrincipals: []
+
+# ─── platform ──────────────────────────────────────────────────────────────
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}   # IRSA / Workload Identity bindings go here in cloud envs
+
+# Matches the ledger Dockerfile's `USER 1001`. A service whose image runs as a
+# different uid must override this or the container will not start.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  fsGroup: 1001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# Created for any workload with replicas > 1. A single-replica workload gets
+# none, because a PDB over one pod blocks node drains.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+podAnnotations: {}
+podLabels: {}

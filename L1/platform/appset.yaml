@@ -1,0 +1,177 @@
+# L1/platform/appset.yaml — the whole platform, for every environment.
+#
+# A matrix generator crosses two things:
+#   1. git files  — every L1/envs/*.yaml, i.e. every {stage}-{provider} cell
+#   2. list       — the component catalog below
+#
+# The product is one Argo Application per (env, component). Adding an env is a
+# new file in envs/; adding a component is a new list element here. Neither
+# requires touching the other.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: platform
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+
+  # Don't delete a live Application because a generator hiccuped (a transient
+  # git failure would otherwise look like "this env no longer exists").
+  preservedFields:
+    annotations: ["argocd.argoproj.io/sync-wave"]
+
+  generators:
+    - matrix:
+        generators:
+          # ── dimension 1: environments ──────────────────────────────────
+          - git:
+              repoURL: git@github.com:BinMunawir/infra.git
+              revision: main
+              files:
+                - path: L1/envs/*.yaml
+
+          # ── dimension 2: the component catalog ─────────────────────────
+          # `wave` orders components within an env — see the ordering note in
+          # ../Readme.md for what that does and does not guarantee.
+          - list:
+              elements:
+                - component: cert-manager
+                  chart: cert-manager
+                  repoURL: https://charts.jetstack.io
+                  version: v1.21.1
+                  namespace: cert-manager
+                  wave: "0"
+
+                - component: istio-base
+                  chart: base
+                  repoURL: https://istio-release.storage.googleapis.com/charts
+                  version: 1.30.3
+                  namespace: istio-system
+                  wave: "0"
+
+                - component: istio-cni
+                  chart: cni
+                  repoURL: https://istio-release.storage.googleapis.com/charts
+                  version: 1.30.3
+                  namespace: istio-system
+                  wave: "1"
+
+                - component: istiod
+                  chart: istiod
+                  repoURL: https://istio-release.storage.googleapis.com/charts
+                  version: 1.30.3
+                  namespace: istio-system
+                  wave: "1"
+
+                # NO DATABASE OPERATOR, DELIBERATELY. Every Postgres this
+                # platform talks to is external and managed outside the cluster
+                # (RDS, Cloud SQL, a laptop container in dev). The cluster
+                # therefore runs no stateful database workload, holds no
+                # database PVC, and cannot lose data it never stored. L2 carries
+                # only host/port/name in Git and pulls credentials through
+                # External Secrets — see L2/Readme.md.
+                #
+                # Reintroducing an in-cluster operator (CloudNativePG or
+                # otherwise) is a deliberate architecture change, not a catalog
+                # addition: it moves durability into the cluster and pulls
+                # backup, restore and failover in with it.
+
+                # Provides the ExternalSecret/SecretStore CRDs that L2 uses for
+                # every credential — including every database credential, now
+                # that nothing in-cluster mints one.
+                - component: external-secrets
+                  chart: external-secrets
+                  repoURL: https://charts.external-secrets.io
+                  version: 2.9.0
+                  namespace: external-secrets
+                  wave: "1"
+
+                - component: ztunnel
+                  chart: ztunnel
+                  repoURL: https://istio-release.storage.googleapis.com/charts
+                  version: 1.30.3
+                  namespace: istio-system
+                  wave: "2"
+
+  # Progressive sync — LIVE. The applicationset controller reads
+  # `applicationsetcontroller.enable.progressive.syncs` from argocd-cmd-params-cm,
+  # which ../bootstrap/argocd/kustomization.yaml sets. Because that is part of
+  # the manifests Argo self-manages, it survives self-heal; the imperative
+  # `kubectl patch` this replaced did not.
+  #
+  # Verify with `just progressive`. If it ever reads OFF, this block is ignored
+  # and ordering falls back to retry/back-off — which converges, noisily.
+  strategy:
+    type: RollingSync
+    rollingSync:
+      steps:
+        - matchExpressions:
+            - key: platform.maal/wave
+              operator: In
+              values: ["0"]
+        - matchExpressions:
+            - key: platform.maal/wave
+              operator: In
+              values: ["1"]
+        - matchExpressions:
+            - key: platform.maal/wave
+              operator: In
+              values: ["2"]
+
+  template:
+    metadata:
+      name: '{{.stage}}-{{.provider}}-{{.component}}'
+      labels:
+        platform.maal/stage: '{{.stage}}'
+        platform.maal/provider: '{{.provider}}'
+        platform.maal/component: '{{.component}}'
+        platform.maal/wave: '{{.wave}}'
+      annotations:
+        argocd.argoproj.io/sync-wave: '{{.wave}}'
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform
+
+      sources:
+        # The upstream chart. `dig` lets an env override the catalog version:
+        # envs/<env>.yaml `versions.<component>` wins, else `.version` here.
+        - repoURL: '{{.repoURL}}'
+          chart: '{{.chart}}'
+          targetRevision: '{{ dig "versions" .component .version . }}'
+          helm:
+            releaseName: '{{.component}}'
+            # Our values, read out of the second source below. Missing file is
+            # fine — it just means this component takes chart defaults here.
+            ignoreMissingValueFiles: true
+            valueFiles:
+              - $values/L1/envs/{{.stage}}-{{.provider}}/{{.component}}.yaml
+
+        # This repo, mounted only so the chart above can read valueFiles from
+        # it. `ref` with no `path` contributes no manifests of its own.
+        - repoURL: git@github.com:BinMunawir/infra.git
+          targetRevision: main
+          ref: values
+
+      destination:
+        server: '{{.destination.server}}'
+        namespace: '{{.namespace}}'
+
+      syncPolicy:
+        automated:
+          prune: false      # additive convergence; never auto-delete platform resources
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true   # Istio/cert-manager/ESO CRDs blow past the
+                                   # 262144-byte client-side apply annotation
+        retry:
+          # Still 10, and still worth it: progressive syncs order Applications,
+          # but a chart whose webhook is not yet serving still needs a second
+          # attempt. This is now the safety net rather than the mechanism.
+          limit: 10
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 3m

@@ -1,0 +1,38 @@
+{{/*
+Default-deny inbound, plus an explicit allow-list of caller identities.
+
+Workloads are selected by LABEL, not by targetRef. Istio's targetRefs field is
+typed as a free-form string in the CRD, so an unsupported kind passes schema
+validation and is then quietly ignored by the control plane — for an authz
+policy that means it looks applied and enforces nothing. A label selector is
+the documented, version-stable way to scope a policy to workloads, so that is
+what this uses.
+
+Ambient enforces this at ztunnel with no sidecar and no waypoint, but only at
+L4: "may this principal reach this workload at all", not "may it call this path
+with this method". L7 rules need a waypoint proxy, which no service has yet.
+
+An ALLOW policy with no rules is Istio's documented deny-everything idiom. For
+a Temporal worker that is exactly right — it dials out and accepts nothing.
+*/}}
+{{- if .Values.mesh.authorizationPolicy.enabled }}
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ include "go-service.name" . }}
+  labels:
+    {{- include "go-service.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "go-service.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  action: ALLOW
+  {{- with .Values.mesh.authorizationPolicy.allowedPrincipals }}
+  rules:
+    - from:
+        - source:
+            principals:
+              {{- toYaml . | nindent 14 }}
+  {{- end }}
+{{- end }}

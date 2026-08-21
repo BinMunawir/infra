@@ -1,0 +1,16 @@
+apiVersion: v2
+name: go-service
+description: >-
+  Deploys one Maal Go service built to the Go Service Standard (blueprint.md):
+  N workloads from one image (worker / server / app), config by ConfigMap +
+  ENV, secrets by env var only, an external database, Istio ambient mesh.
+type: application
+
+# Chart version — bump on any template change.
+version: 0.1.0
+
+# No appVersion: this chart deploys many services at many versions. The image
+# tag lives in each service's values file.
+
+maintainers:
+  - name: Maal platform

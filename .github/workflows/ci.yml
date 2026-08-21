@@ -1,0 +1,173 @@
+# CI — the gate this repo did not have.
+#
+# Every Application in L1 and L2 syncs with `automated` + `selfHeal`, so a bad
+# commit to main reaches the cluster without a human in the path. That is the
+# right default for GitOps and it is only safe if something checks the commit
+# first. This is that something.
+#
+# It runs entirely offline against no cluster: rendering, schema validation, and
+# the repo's own consistency rules. Nothing here needs credentials, so it is
+# safe on pull requests from forks.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─── the Helm chart every Go service uses ────────────────────────────────
+  charts:
+    name: charts render + validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: helm lint
+        run: helm lint L2/charts/go-service
+
+      - name: Render every service through the chart
+        # This is what `just render` does, and it is the check that actually
+        # catches things: a values file that no longer matches the chart's
+        # contract fails here rather than as a red Application.
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/rendered
+          for f in L2/envs/dev-local/maal-*.yaml; do
+            s=$(basename "$f" .yaml)
+            echo "── $s"
+            helm template "$s" L2/charts/go-service -f "$f" > "/tmp/rendered/$s.yaml"
+          done
+
+      - name: Install kubeconform
+        run: |
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C /usr/local/bin kubeconform
+
+      - name: Validate rendered manifests against real schemas
+        # -schema-location includes the CRD catalog, so ExternalSecret and
+        # AuthorizationPolicy are checked against their actual schemas rather
+        # than skipped. `-strict` rejects unknown fields, which is what catches
+        # a values key that renders into a field that does not exist.
+        run: |
+          kubeconform \
+            -strict \
+            -summary \
+            -kubernetes-version 1.31.0 \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            /tmp/rendered/
+
+      - name: Validate hand-written manifests
+        # The Argo objects, the secret stores, and the edge. `-ignore-missing-schemas`
+        # here and not above: these reference CRDs (ApplicationSet, Gateway) whose
+        # schemas move faster than the catalog, and a missing schema must not be
+        # the thing that fails a build.
+        run: |
+          kubeconform \
+            -summary \
+            -kubernetes-version 1.31.0 \
+            -ignore-missing-schemas \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            L1/platform L1/root L1/envs L2/apps L2/root L2/secrets L2/edge
+
+  # ─── the repo's own consistency rules ────────────────────────────────────
+  conventions:
+    name: conventions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: extractions/setup-just@v2
+
+      - name: Every YAML parses
+        run: |
+          set -euo pipefail
+          cd L1 && just lint
+          cd ../L2 && just yaml
+
+      - name: Every catalog entry has a values file
+        # Reports gaps rather than failing: a component with nothing to override
+        # legitimately has no file. The point is that the gap is visible in the
+        # PR instead of discovered in the cluster.
+        run: |
+          cd L1 && just check-envs
+          cd ../L2 && just check-envs
+
+      - name: No credential-shaped file is committed
+        # .gitignore is the primary control; this is the check that it worked.
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -E '(^|/)(kubeconfig|contract\.json|backend\.hcl|.*\.tfvars|.*_deploy(\.pub)?|.*\.pem)$'; then
+            echo "!! a credential- or environment-specific file is tracked" >&2
+            exit 1
+          fi
+          echo ">> no credential-shaped files tracked"
+
+      - name: Chart version bumped when templates change
+        # The chart has no appVersion and many consumers, so `version` is the
+        # only signal that a template changed. Advisory on purpose: not every
+        # comment-only edit deserves a bump.
+        if: github.event_name == 'pull_request'
+        run: |
+          set -uo pipefail
+          git fetch --depth=1 origin "${{ github.base_ref }}"
+          if git diff --name-only "origin/${{ github.base_ref }}"...HEAD \
+               | grep -q '^L2/charts/go-service/templates/'; then
+            if ! git diff "origin/${{ github.base_ref }}"...HEAD -- L2/charts/go-service/Chart.yaml \
+                 | grep -q '^+version:'; then
+              echo "::warning::templates changed but go-service Chart.yaml version did not"
+            fi
+          fi
+
+  # ─── shell ───────────────────────────────────────────────────────────────
+  shell:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck every bootstrap script
+        # These scripts are the imperative seam. They run with set -euo
+        # pipefail against a real cluster, and an unquoted expansion there is a
+        # much worse afternoon than one in a values file.
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck L0/local/*.sh L1/bootstrap/*.sh L2/bootstrap/*.sh
+
+  # ─── L0 ──────────────────────────────────────────────────────────────────
+  tofu:
+    name: opentofu fmt + validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: 1.8.5
+
+      - name: fmt
+        run: tofu fmt -recursive -check -diff L0/aws L0/gcp
+
+      - name: validate
+        # -backend=false: validation needs no bucket and no cloud credentials,
+        # which is the only reason the unvalidated skeletons can be checked at
+        # all before anyone has an account to point them at.
+        run: |
+          set -euo pipefail
+          for e in L0/aws L0/gcp; do
+            echo "── $e"
+            (cd "$e" && tofu init -backend=false -upgrade >/dev/null && tofu validate)
+          done

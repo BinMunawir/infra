@@ -1,0 +1,13 @@
+# cp terraform.tfvars.example terraform.tfvars — the real file is gitignored,
+# since it carries project-shaped detail.
+
+env           = "dev"
+project_id    = "maal-dev-000000"
+edge_hostname = "dev.maal.example"
+
+# region             = "me-central2"
+# cluster_name       = "maal"
+# kubernetes_version = "1.31"
+# node_count         = 2          # PER ZONE on a regional cluster
+# node_machine_type  = "e2-standard-2"
+# subnet_cidr        = "10.30.0.0/16"

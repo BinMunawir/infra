@@ -1,0 +1,196 @@
+# L2 — the Maal product layer. Run from the L2 directory.
+
+set shell := ["bash", "-uc"]
+
+argocd_ns := "argocd"
+l0_env    := env_var_or_default("L0_ENV", "local")
+l2_env    := env_var_or_default("L2_ENV", "dev-local")
+contract  := justfile_directory() / ".." / "L0" / l0_env / "contract.json"
+
+# Where the Go service repos live — siblings of the infra repo.
+src       := justfile_directory() / ".."  / ".."
+cluster   := "maal-local"
+
+_default:
+    @just --list --unsorted
+
+_kubeconfig:
+    @test -f {{contract}} || { echo "!! L0 '{{l0_env}}' is not up — run: cd ../L0 && just {{l0_env}}-up" >&2; exit 1; }
+    @jq -er .kubeconfig {{contract}}
+
+# ─── lifecycle ─────────────────────────────────────────────────────────────
+
+# Verify the contract + L1, then apply the L2 root
+up:
+    ./bootstrap/up.sh
+
+# Remove L2, leaving L1 and the cluster (destructive; prompts)
+down:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export KUBECONFIG=$(just _kubeconfig)
+    read -rp "Remove all L2 apps and services from '$(kubectl config current-context)'? [y/N] " a
+    [[ "$a" == "y" || "$a" == "Y" ]] || { echo "aborted"; exit 0; }
+    kubectl delete -f root/root-app.yaml --cascade=foreground --ignore-not-found --timeout=300s || true
+    kubectl delete -f root/project.yaml --ignore-not-found || true
+    echo ">> L2 removed. Databases are external and untouched — this deletes no data."
+
+# ─── images ────────────────────────────────────────────────────────────────
+
+# Build every service image and load it into kind (no registry needed locally)
+images: (image "client" "maal/business") (image "ledger" "maal/ledger") (image "maalstream_ph" "maal/stream-ph")
+
+# Build one service image and load it: `just image ledger maal/ledger`
+image repo tag:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="{{src}}/{{repo}}"
+    test -d "$dir" || { echo "!! no such service repo: $dir" >&2; exit 1; }
+    if [ ! -f "$dir/Dockerfile" ]; then
+        echo "!! {{repo}} has no Dockerfile — only 'ledger' ships one today." >&2
+        echo "   Copy ledger/Dockerfile and change the ./cmd/<entrypoint> targets." >&2
+        exit 1
+    fi
+    docker build -t "{{tag}}:dev" "$dir"
+    kind load docker-image "{{tag}}:dev" --name {{cluster}}
+    echo ">> loaded {{tag}}:dev into kind/{{cluster}}"
+    echo ">> NOTE: the tag did not change, so the Deployment spec did not either."
+    echo "   Argo will report Synced and keep the OLD pods. Roll them:"
+    echo "     just restart <service>"
+
+# Roll a service's pods onto a freshly loaded image: `just restart maal-business`
+#
+# Needed because `:dev` is a mutable tag — see the warning in
+# charts/go-service/values.yaml. Cloud envs use immutable tags and never need
+# this: the values change is what triggers the rollout.
+restart service:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export KUBECONFIG=$(just _kubeconfig)
+    kubectl -n {{service}} rollout restart deployment -l app.kubernetes.io/name={{service}}
+    kubectl -n {{service}} rollout status deployment -l app.kubernetes.io/name={{service}} --timeout=180s
+
+# ─── inspection ────────────────────────────────────────────────────────────
+
+# L2 Applications with sync + health
+apps:
+    @KUBECONFIG=$(just _kubeconfig) kubectl -n {{argocd_ns}} get applications -l maal/stage -o wide
+
+# Pods across every L2 namespace
+status:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export KUBECONFIG=$(just _kubeconfig)
+    kubectl -n {{argocd_ns}} get applications -l maal/stage -o wide
+    for ns in maal-edge maal-temporal maal-keycloak maal-business maal-stream-ph; do
+        echo "--- $ns ---"
+        kubectl -n "$ns" get pods 2>/dev/null || echo "  (namespace not created yet)"
+    done
+
+# ─── the edge ──────────────────────────────────────────────────────────────
+
+# Gateway + routes + certificate status
+edge:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export KUBECONFIG=$(just _kubeconfig)
+    kubectl -n maal-edge get gateway,certificate 2>/dev/null || echo "(maal-edge not created yet)"
+    echo "--- routes ---"
+    kubectl get httproute -A 2>/dev/null || true
+    echo "--- gateway service ---"
+    kubectl -n maal-edge get svc -l gateway.networking.k8s.io/gateway-name=maal-edge 2>/dev/null || true
+
+# Pin the gateway's NodePort to 30080, which is what the L0 contract's
+# lbEndpoint (127.0.0.1:8080) maps to.
+#
+# THE ONE IMPERATIVE STEP LEFT LOCALLY. istiod provisions the gateway Service
+# and assigns its nodePort dynamically, and the Gateway API has no field to pin
+# it. Istio's manual-deployment mode (pre-create the Deployment + Service with
+# the gateway-name label) would make this declarative; that is a deliberate
+# piece of work, not a values change, so it is written down rather than guessed.
+#
+# Safe to re-run. Nothing else depends on it — only reaching the cluster from
+# your laptop does.
+edge-port:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export KUBECONFIG=$(just _kubeconfig)
+    svc=$(kubectl -n maal-edge get svc -l gateway.networking.k8s.io/gateway-name=maal-edge \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    test -n "$svc" || { echo "!! no gateway Service yet — has dev-local-edge synced? (just apps)" >&2; exit 1; }
+    kubectl -n maal-edge patch svc "$svc" --type=json \
+        -p '[{"op":"replace","path":"/spec/ports/0/nodePort","value":30080}]'
+    echo ">> $svc nodePort pinned to 30080 — the platform is now at https://<host>:8080"
+    just hosts
+
+# The /etc/hosts lines that make the edge hostnames resolve locally
+hosts:
+    @echo ""
+    @echo "   Add to /etc/hosts:"
+    @echo "     127.0.0.1  keycloak.maal.local temporal.maal.local"
+    @echo ""
+    @echo "   Then:  curl -k https://keycloak.maal.local:8080/realms/master"
+    @echo "   (-k because the cert is self-signed; 'just edge-ca' to trust it)"
+
+# The local root certificate, so a browser can trust the edge without warnings
+edge-ca:
+    @KUBECONFIG=$(just _kubeconfig) kubectl -n maal-edge get secret maal-edge-ca \
+        -o jsonpath='{.data.tls\.crt}' | base64 -d
+
+# Did the secrets actually materialise?
+secrets:
+    @KUBECONFIG=$(just _kubeconfig) kubectl get externalsecrets -A 2>/dev/null || echo "(external-secrets CRDs not present — is L1 converged?)"
+    @KUBECONFIG=$(just _kubeconfig) kubectl get clustersecretstores 2>/dev/null || true
+
+# Why is an app unhealthy? `just why dev-local-maal-business`
+why app:
+    @KUBECONFIG=$(just _kubeconfig) kubectl -n {{argocd_ns}} get application {{app}} \
+        -o jsonpath='{range .status.conditions[*]}{.type}: {.message}{"\n"}{end}{"\n"}SYNC:   {.status.sync.status}{"\n"}HEALTH: {.status.health.status}{"\n"}'
+
+# ─── validation (no cluster needed) ────────────────────────────────────────
+
+# Render every service through the chart — catches template errors before Argo does
+render:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v helm >/dev/null || { echo "!! helm not installed" >&2; exit 1; }
+    for f in envs/{{l2_env}}/maal-*.yaml; do
+        s=$(basename "$f" .yaml)
+        echo "── $s ──"
+        helm template "$s" charts/go-service -f "$f" >/dev/null && echo "   ok"
+    done
+
+# Lint the local chart
+lint:
+    @command -v helm >/dev/null || { echo "!! helm not installed" >&2; exit 1; }
+    @helm lint charts/go-service
+
+# Every app in the catalogs should have a values file in every env
+check-envs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    apps=$(grep -hoE '^\s+- (service|app): \S+' apps/*.yaml | awk '{print $3}' | sort -u)
+    for envfile in envs/*.yaml; do
+        e=$(basename "$envfile" .yaml)
+        for a in $apps; do
+            test -f "envs/$e/$a.yaml" || echo "   missing (chart defaults apply): envs/$e/$a.yaml"
+        done
+    done
+    echo ">> env/app matrix checked"
+
+# Check every YAML parses. See the note in ../L1/justfile about parser choice.
+yaml:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if python3 -c 'import yaml' 2>/dev/null; then
+        check() { python3 -c 'import sys,yaml; list(yaml.safe_load_all(open(sys.argv[1])))' "$1"; }
+    elif command -v ruby >/dev/null 2>&1; then
+        check() { ruby -ryaml -e 'YAML.load_stream(File.read(ARGV[0]))' "$1"; }
+    else
+        echo "!! no YAML parser — install PyYAML (pip install pyyaml) or ruby" >&2; exit 1
+    fi
+    fail=0
+    while IFS= read -r f; do
+        check "$f" 2>/dev/null || { echo "!! parse error: $f"; fail=1; }
+    done < <(find . -name '*.yaml' -not -path './charts/*/templates/*')
+    if [ "$fail" -eq 0 ]; then echo ">> all yaml parses"; else exit 1; fi

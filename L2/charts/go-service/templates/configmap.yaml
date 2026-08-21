@@ -1,0 +1,21 @@
+{{- include "go-service.validate" . -}}
+{{/*
+config/<env>.yml, mounted over the image's own config directory.
+
+Non-secret only. cleanenv reads this file, then env vars override it — so a
+secret injected as an env var always wins over anything that lands here.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "go-service.configMapName" . }}
+  labels:
+    {{- include "go-service.labels" . | nindent 4 }}
+data:
+  {{ .Values.config.env }}.yml: |
+    # Rendered by the go-service chart. Do not edit in-cluster — Argo selfHeal
+    # will revert it. Change L2/envs/<env>/<service>.yaml instead.
+    Env: {{ .Values.config.env }}
+    {{- with .Values.config.values }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}

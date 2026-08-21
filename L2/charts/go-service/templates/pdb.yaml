@@ -1,0 +1,28 @@
+{{/*
+A PodDisruptionBudget per workload that actually has redundancy.
+
+Skipped for single-replica workloads on purpose: a PDB with minAvailable:1 over
+one pod means the node can never be drained voluntarily, which turns a routine
+cluster upgrade into a stuck one.
+*/}}
+{{- $root := . -}}
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- range $name, $w := .Values.workloads }}
+{{- $replicas := 1 }}{{- if hasKey $w "replicas" }}{{ $replicas = $w.replicas }}{{ end }}
+{{- if gt (int $replicas) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "go-service.name" $root }}-{{ $name }}
+  labels:
+    {{- include "go-service.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  minAvailable: {{ $root.Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "go-service.selectorLabels" (dict "root" $root "workloadName" $name) | nindent 6 }}
+{{- end }}
+{{- end }}
+{{- end }}

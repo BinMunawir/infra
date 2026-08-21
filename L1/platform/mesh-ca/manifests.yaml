@@ -1,0 +1,81 @@
+# The cert-manager half of a plugged-in Istio mesh CA.
+#
+# INERT: this directory is not synced (the root app uses recurse: false) and is
+# not in either catalog. See README.md — the remaining step is getting the
+# material into the key layout istiod reads, which is the part that needs a live
+# cluster to verify.
+#
+# What this builds:
+#
+#   selfsigned Issuer ──▶ maal-mesh-root (Certificate, isCA)
+#                              │  secret: maal-mesh-root
+#                              ▼
+#                         maal-mesh-ca (Issuer, ca:)
+#                              │
+#                              ▼
+#                    maal-mesh-intermediate (Certificate, isCA)
+#                              secret: maal-mesh-intermediate
+#
+# istiod signs workload certs with the intermediate; the root stays offline in
+# anything but dev. In cloud, replace the selfsigned Issuer with a Vault or AWS
+# PCA issuer and delete the root Certificate — the chain below is unchanged.
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: maal-mesh-selfsigned
+  namespace: istio-system
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: maal-mesh-root
+  namespace: istio-system
+spec:
+  isCA: true
+  commonName: maal-mesh-root
+  secretName: maal-mesh-root
+  # 10 years. A mesh root is not something you want rotating on its own
+  # schedule; rotation is a planned event with a rollout behind it.
+  duration: 87600h
+  renewBefore: 8760h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: maal-mesh-selfsigned
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: maal-mesh-ca
+  namespace: istio-system
+spec:
+  ca:
+    secretName: maal-mesh-root
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: maal-mesh-intermediate
+  namespace: istio-system
+spec:
+  isCA: true
+  commonName: maal-mesh-intermediate
+  secretName: maal-mesh-intermediate
+  duration: 8760h      # 1 year
+  renewBefore: 720h    # 30 days
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  # istiod signs SPIFFE identities under this trust domain.
+  uris:
+    - spiffe://cluster.local/ns/istio-system/sa/istiod
+  issuerRef:
+    name: maal-mesh-ca
+    kind: Issuer
+    group: cert-manager.io

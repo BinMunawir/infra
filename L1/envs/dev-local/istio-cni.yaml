@@ -1,0 +1,10 @@
+# istio-cni — dev-local
+#
+# Ambient redirection. On kind the Istio CNI plugin chains after kindnet; the
+# default conf/bin dirs are correct for kindest/node images, so no overrides.
+profile: ambient
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 100Mi

@@ -1,0 +1,10 @@
+# ztunnel — dev-local
+#
+# The ambient node proxy: a DaemonSet giving mesh-wide L4 mTLS with no sidecars.
+# This is the control that replaces the pod-to-pod encryption Cilium WireGuard
+# would have provided — and on kind it is the ONLY real network control, since
+# kindnet enforces no NetworkPolicy (see L0/contract.md).
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi

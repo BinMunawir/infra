@@ -1,0 +1,38 @@
+# Argo CD's own configuration, as a kustomize overlay on the pinned upstream
+# manifests.
+#
+# WHY THIS EXISTS: Argo self-manages from this directory (see
+# ../../platform/argocd.yaml), so any `kubectl patch` against an Argo Deployment
+# is reverted on the next sync. Controller flags that must survive have to be in
+# Git, and this is where they go. `install.yaml` stays byte-identical to the
+# upstream release so a version bump is a clean re-vendor.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - install.yaml
+
+patches:
+  # ─── progressive (wave-ordered) syncs ────────────────────────────────────
+  # Without this the applicationset controller ignores the RollingSync strategy
+  # in ../../platform/appset.yaml, and cross-Application ordering degrades to
+  # retry-with-backoff — a cold bring-up that is red for a minute or two while
+  # istiod waits for istio-base's CRDs.
+  #
+  # The controller reads this key from argocd-cmd-params-cm; upstream ships the
+  # ConfigMap with no `data` at all, which is why this is an `add` of the whole
+  # map rather than a single key.
+  #
+  # Verify after a sync:
+  #   kubectl -n argocd get deploy argocd-applicationset-controller \
+  #     -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="ARGOCD_APPLICATIONSET_CONTROLLER_ENABLE_PROGRESSIVE_SYNCS")]}'
+  #   kubectl -n argocd get cm argocd-cmd-params-cm -o jsonpath='{.data}'
+  - target:
+      version: v1
+      kind: ConfigMap
+      name: argocd-cmd-params-cm
+    patch: |
+      - op: add
+        path: /data
+        value:
+          applicationsetcontroller.enable.progressive.syncs: "true"

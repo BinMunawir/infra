@@ -1,0 +1,6 @@
+# istio-base — dev-local
+#
+# CRDs and cluster roles only, no workloads, so there is nothing env-specific
+# to set. The file exists so every component in the catalog has a visible slot
+# in every env — an empty override should be obvious, not invisible.
+defaultRevision: default

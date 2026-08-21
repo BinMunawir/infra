@@ -1,0 +1,13 @@
+# cp terraform.tfvars.example terraform.tfvars — the real file is gitignored,
+# since it carries account-shaped detail.
+
+env           = "dev"
+edge_hostname = "dev.maal.example"
+
+# region             = "me-south-1"
+# cluster_name       = "maal"
+# kubernetes_version = "1.31"
+# node_count         = 2
+# node_instance_type = "m6i.large"
+# vpc_cidr           = "10.20.0.0/16"
+# az_count           = 3

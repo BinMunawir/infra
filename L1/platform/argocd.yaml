@@ -1,0 +1,45 @@
+# Argo manages Argo. Reads the vendored manifests that bootstrap/up.sh installed
+# imperatively, closing the loop: after this syncs, even the GitOps engine is
+# under GitOps.
+#
+# NOT part of the platform ApplicationSet. Argo runs once, in the hub cluster,
+# regardless of how many {stage}×{provider} envs the appset fans out to — so it
+# is a single Application rather than one per env.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  source:
+    repoURL: git@github.com:BinMunawir/infra.git
+    targetRevision: main
+    # Contains kustomization.yaml, so Argo renders this with kustomize rather
+    # than as a plain directory. That is what lets controller flags live in Git
+    # instead of in a `kubectl patch` that self-heal reverts.
+    path: L1/bootstrap/argocd
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: false        # never prune Argo itself
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true   # Argo's own CRDs exceed the 262144-byte limit
+      # bootstrap/up.sh applies these same manifests with field manager
+      # `argocd-controller` so ownership transfers cleanly. Force=true is the
+      # belt to that braces: if anything else ever claims a field, the
+      # self-managing app resolves the conflict instead of parking on it.
+      - Force=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

@@ -1,0 +1,166 @@
+# L1 — the GitOps platform. Run from the L1 directory.
+#
+# Every recipe reads the kubeconfig out of the L0 contract, so there is no
+# ambient `kubectl` context to get wrong.
+
+set shell := ["bash", "-uc"]
+
+argocd_ns := "argocd"
+l0_env    := env_var_or_default("L0_ENV", "local")
+l1_env    := env_var_or_default("L1_ENV", "dev-local")
+contract  := justfile_directory() / ".." / "L0" / l0_env / "contract.json"
+
+_default:
+    @just --list --unsorted
+
+# Resolve the kubeconfig from the L0 contract; fail clearly if L0 is not up.
+_kubeconfig:
+    @test -f {{contract}} || { echo "!! L0 '{{l0_env}}' is not up — run: cd ../L0 && just {{l0_env}}-up" >&2; exit 1; }
+    @jq -er .kubeconfig {{contract}}
+
+# ─── lifecycle ─────────────────────────────────────────────────────────────
+
+# Bootstrap Argo (pinned) + apply the app-of-apps root
+up:
+    ./bootstrap/up.sh
+
+# Remove the platform + Argo, keeping the cluster (destructive; prompts)
+down:
+    ./bootstrap/down.sh
+
+# ─── inspection ────────────────────────────────────────────────────────────
+
+# Applications with sync + health status
+apps:
+    @KUBECONFIG=$(just _kubeconfig) kubectl -n {{argocd_ns}} get applications -o wide
+
+# Applications + platform pods across every namespace L1 owns
+status:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export KUBECONFIG=$(just _kubeconfig)
+    kubectl -n {{argocd_ns}} get applicationsets -o wide 2>/dev/null || true
+    echo
+    kubectl -n {{argocd_ns}} get applications -o wide
+    for ns in istio-system cert-manager external-secrets; do
+        echo "--- $ns ---"
+        kubectl -n "$ns" get pods 2>/dev/null || echo "  (namespace not created yet)"
+    done
+
+# Follow Application health until you stop it — the missing feedback loop
+watch:
+    @KUBECONFIG=$(just _kubeconfig) kubectl -n {{argocd_ns}} get applications -o wide -w
+
+# Anything not Synced+Healthy right now. Exits non-zero if so — usable in CI.
+drift:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    export KUBECONFIG=$(just _kubeconfig)
+    bad=$(kubectl -n {{argocd_ns}} get applications \
+        -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.sync.status}{"\t"}{.status.health.status}{"\n"}{end}' \
+        | awk '$2 != "Synced" || $3 != "Healthy"')
+    if [ -n "$bad" ]; then
+        echo "!! not converged:"; echo "$bad"; exit 1
+    fi
+    echo ">> all Applications Synced + Healthy"
+
+# Why is an app unhealthy? `just why dev-local-istiod`
+why app:
+    @KUBECONFIG=$(just _kubeconfig) kubectl -n {{argocd_ns}} get application {{app}} \
+        -o jsonpath='{range .status.conditions[*]}{.type}: {.message}{"\n"}{end}{"\n"}SYNC:   {.status.sync.status}{"\n"}HEALTH: {.status.health.status}{"\n"}'
+
+# Tail the applicationset controller — where generator errors surface
+logs-appset:
+    @KUBECONFIG=$(just _kubeconfig) kubectl -n {{argocd_ns}} logs -f deploy/argocd-applicationset-controller
+
+# ─── access ────────────────────────────────────────────────────────────────
+
+# Initial Argo admin password
+password:
+    @KUBECONFIG=$(just _kubeconfig) kubectl -n {{argocd_ns}} get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo
+
+# Port-forward the Argo UI -> https://localhost:8080
+ui:
+    @echo ">> https://localhost:8080  (user: admin, password: just password)"
+    @KUBECONFIG=$(just _kubeconfig) kubectl -n {{argocd_ns}} port-forward svc/argocd-server 8080:443
+
+# Point your shell at this env's cluster: `eval $(just env)`
+env:
+    @echo "export KUBECONFIG=$(just _kubeconfig)"
+
+# ─── operations ────────────────────────────────────────────────────────────
+
+# Force a re-read of Git without waiting for the poll interval
+refresh:
+    @KUBECONFIG=$(just _kubeconfig) kubectl -n {{argocd_ns}} annotate application --all \
+        argocd.argoproj.io/refresh=hard --overwrite
+
+# Are progressive (wave-ordered) syncs actually on? They are configured in Git —
+# bootstrap/argocd/kustomization.yaml — so this verifies rather than patches.
+progressive:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export KUBECONFIG=$(just _kubeconfig)
+    key=$(kubectl -n {{argocd_ns}} get cm argocd-cmd-params-cm \
+        -o jsonpath='{.data.applicationsetcontroller\.enable\.progressive\.syncs}' 2>/dev/null || true)
+    env=$(kubectl -n {{argocd_ns}} get deploy argocd-applicationset-controller \
+        -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="ARGOCD_APPLICATIONSET_CONTROLLER_ENABLE_PROGRESSIVE_SYNCS")].name}' 2>/dev/null || true)
+    echo "argocd-cmd-params-cm key : ${key:-<unset>}"
+    echo "controller reads it      : ${env:-<no env ref — wrong Argo version?>}"
+    if [ "${key:-}" = "true" ]; then
+        echo ">> progressive syncs ON — RollingSync in platform/appset.yaml is live"
+    else
+        echo "!! OFF — ordering is retry-with-backoff. The ConfigMap comes from"
+        echo "   bootstrap/argocd/kustomization.yaml; is the argocd app synced?"
+        exit 1
+    fi
+
+# What would the appset generate? Requires the cluster to be up.
+render:
+    @KUBECONFIG=$(just _kubeconfig) kubectl -n {{argocd_ns}} get applications \
+        -l platform.maal/stage --show-labels
+
+# Re-vendor the Gateway API CRDs. Keep the tag in sync with the `version`
+# field on the gateway-api element in platform/appset-vendored.yaml.
+vendor-gateway-api tag="v1.6.1":
+    @mkdir -p vendor/gateway-api
+    curl -fsSL "https://github.com/kubernetes-sigs/gateway-api/releases/download/{{tag}}/standard-install.yaml" \
+        -o vendor/gateway-api/standard-install.yaml
+    @echo ">> vendored Gateway API {{tag}} — update appset-vendored.yaml, then commit"
+
+# ─── validation (no cluster needed) ────────────────────────────────────────
+
+# Check every YAML file parses (skips the vendored Argo manifests)
+#
+# Uses whichever parser the machine has. macOS system python3 ships without
+# PyYAML and GitHub runners ship without a guaranteed ruby, so picking one and
+# hoping produces a lint that silently "fails" everything — which is worse than
+# no lint, because it looks like it ran.
+lint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if python3 -c 'import yaml' 2>/dev/null; then
+        check() { python3 -c 'import sys,yaml; list(yaml.safe_load_all(open(sys.argv[1])))' "$1"; }
+    elif command -v ruby >/dev/null 2>&1; then
+        check() { ruby -ryaml -e 'YAML.load_stream(File.read(ARGV[0]))' "$1"; }
+    else
+        echo "!! no YAML parser — install PyYAML (pip install pyyaml) or ruby" >&2; exit 1
+    fi
+    fail=0
+    while IFS= read -r f; do
+        check "$f" 2>/dev/null || { echo "!! parse error: $f"; fail=1; }
+    done < <(find . -name '*.yaml' -not -path './bootstrap/argocd/*')
+    if [ "$fail" -eq 0 ]; then echo ">> all yaml parses"; else exit 1; fi
+
+# Every component in the catalog should have a values file in every env
+check-envs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    comps=$(grep -oE '^\s+- component: \S+' platform/appset.yaml | awk '{print $3}')
+    for envfile in envs/*.yaml; do
+        e=$(basename "$envfile" .yaml)
+        for c in $comps; do
+            test -f "envs/$e/$c.yaml" || echo "   missing (chart defaults apply): envs/$e/$c.yaml"
+        done
+    done
+    echo ">> env/component matrix checked"
