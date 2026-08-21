@@ -65,11 +65,17 @@ spec:
   privateKey:
     algorithm: ECDSA
     size: 256
-  # Every hostname the routes serve. Adding a route means adding its host here;
-  # `just hosts` prints the /etc/hosts lines that make them resolve.
+  # Every hostname the routes serve — these must stay in step with
+  # ./routes.yaml, or the listener terminates TLS for a name no route matches.
+  #
+  # nip.io names, so they resolve to 127.0.0.1 from any machine with no
+  # /etc/hosts entry and no sudo. The reasoning is written out in routes.yaml.
+  # LOCAL ONLY: a loopback address baked into a hostname is meaningless off this
+  # laptop, and a cloud env replaces this file with an ACME issuer over real
+  # names anyway.
   dnsNames:
-    - keycloak.maal.local
-    - temporal.maal.local
+    - keycloak.127.0.0.1.nip.io
+    - temporal.127.0.0.1.nip.io
   issuerRef:
     name: maal-edge-ca
     kind: Issuer

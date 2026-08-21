@@ -98,8 +98,9 @@ server:
         - name: default
           retention: 3d
 
-# Reachable at https://temporal.maal.local:8080 through the edge Gateway —
-# see ../../edge/dev-local/routes.yaml.
+# Reachable at https://temporal.127.0.0.1.nip.io:8080 through the edge Gateway
+# — see ../../edge/dev-local/routes.yaml. No /etc/hosts entry needed; nip.io
+# resolves that name to 127.0.0.1 through public DNS.
 web:
   enabled: true
   replicaCount: 1

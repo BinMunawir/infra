@@ -10,8 +10,22 @@
 # parked. When a service does need to be reachable, add a route beside it here
 # and a hostname to ../certificate.yaml.
 #
-# Resolve these locally:
-#   just hosts        # prints the /etc/hosts lines
+# ─── why nip.io ────────────────────────────────────────────────────────────
+# `*.127.0.0.1.nip.io` is real public DNS: nip.io answers any `<label>.<ip>`
+# name with that IP, so these hostnames resolve to 127.0.0.1 on any machine
+# with no /etc/hosts entry, no sudo, and no local resolver config. That matters
+# because the previous `*.maal.local` names resolved ONLY on a laptop whose
+# owner had edited /etc/hosts — which made the edge, the one path this layer
+# exists to provide, unusable for everyone else and unverifiable in CI.
+#
+# `.local` was also the wrong suffix on macOS specifically: it is reserved for
+# mDNS/Bonjour, so mDNSResponder can answer ahead of /etc/hosts.
+#
+# LOCAL ONLY. These names hardcode a loopback address and are meaningless off
+# this laptop. A cloud env replaces this whole directory with routes carrying
+# real hostnames in a zone it owns — see ../../Readme.md.
+#
+#   just urls         # prints the reachable URLs
 #
 # ─── why every default is written out ──────────────────────────────────────
 # `parentRefs` and `rules` are ATOMIC lists in the HTTPRoute schema, and this
@@ -41,7 +55,7 @@ spec:
       namespace: maal-edge
       sectionName: https
   hostnames:
-    - keycloak.maal.local
+    - keycloak.127.0.0.1.nip.io
   rules:
     - matches:
         - path:
@@ -68,7 +82,7 @@ spec:
       namespace: maal-edge
       sectionName: https
   hostnames:
-    - temporal.maal.local
+    - temporal.127.0.0.1.nip.io
   rules:
     - matches:
         - path:

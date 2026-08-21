@@ -308,15 +308,32 @@ verify:
     # above can pass while the edge answers nothing, because "Programmed" means
     # istiod accepted the config, not that a request survives the trip through
     # the kind port mapping, the NodePort, the TLS listener and the route.
+    # No --resolve any more: the hostnames are nip.io names that resolve to
+    # 127.0.0.1 through PUBLIC DNS, so this now tests exactly what a browser
+    # does — lookup included. That is the point of the change; faking the
+    # lookup would pass on a machine where the browser fails.
     if command -v curl >/dev/null 2>&1; then
         for h in keycloak temporal; do
-            code="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' \
-                --resolve "$h.maal.local:${want_port:-8080}:127.0.0.1" \
-                "https://$h.maal.local:${want_port:-8080}/" 2>/dev/null || echo 000)"
+            url="https://$h.127.0.0.1.nip.io:${want_port:-8080}/"
+            code="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || echo 000)"
+            if [ "$code" = "000" ]; then
+                # Tell "this machine has no DNS" apart from "the edge is down".
+                # nip.io is public, so an offline laptop cannot resolve it even
+                # though the gateway is perfectly healthy — and reporting that
+                # as a broken edge is exactly the false alarm that teaches
+                # people to stop trusting this check.
+                alt="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' \
+                    --resolve "$h.127.0.0.1.nip.io:${want_port:-8080}:127.0.0.1" \
+                    "$url" 2>/dev/null || echo 000)"
+                case "$alt" in
+                    2*|3*) note "$url answers only with the lookup bypassed — the edge is fine, this machine cannot resolve nip.io (offline?)" ;;
+                    *)     no   "$url unreachable — 'just edge-port', then check the gateway pod" ;;
+                esac
+                continue
+            fi
             case "$code" in
-                2*|3*) ok "https://$h.maal.local:${want_port:-8080}/ -> $code" ;;
-                000)   no "https://$h.maal.local:${want_port:-8080}/ unreachable — 'just edge-port', then check the gateway pod" ;;
-                *)     no "https://$h.maal.local:${want_port:-8080}/ -> $code" ;;
+                2*|3*) ok "$url -> $code" ;;
+                *)     no "$url -> $code" ;;
             esac
         done
     else
@@ -389,16 +406,29 @@ edge-port:
 
     kubectl -n maal-edge patch svc "$svc" --type=json -p "$ops"
     echo ">> $svc https nodePort pinned to 30080 — the platform is now at https://<host>:8080"
-    just hosts
+    just urls
 
-# The /etc/hosts lines that make the edge hostnames resolve locally
-hosts:
-    @echo ""
-    @echo "   Add to /etc/hosts:"
-    @echo "     127.0.0.1  keycloak.maal.local temporal.maal.local"
-    @echo ""
-    @echo "   Then:  curl -k https://keycloak.maal.local:8080/realms/master"
-    @echo "   (-k because the cert is self-signed; 'just edge-ca' to trust it)"
+# Replaces the old `hosts` recipe, which printed /etc/hosts lines. The edge now
+# serves `*.127.0.0.1.nip.io` — real public DNS that answers 127.0.0.1 — so
+# nothing has to be added to /etc/hosts, and no sudo is involved. See
+# edge/dev-local/routes.yaml for why.
+#
+# The port comes from the L0 contract rather than being hardcoded, for the same
+# reason every other recipe here reads it: 8080 is a fact about the current
+# cluster, not about this file.
+#
+# Where the edge answers from your laptop
+urls:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    port="$(jq -r '.lbEndpoint | split(":")[1]' {{contract}} 2>/dev/null || echo 8080)"
+    echo ""
+    echo "   Keycloak:  https://keycloak.127.0.0.1.nip.io:${port}/realms/master"
+    echo "   Temporal:  https://temporal.127.0.0.1.nip.io:${port}/"
+    echo ""
+    echo "   Nothing to add to /etc/hosts — nip.io resolves these publicly."
+    echo "   The certificate is self-signed, so a browser warns once and curl"
+    echo "   needs -k; 'just edge-ca' prints the root if you would rather trust it."
 
 # The local root certificate, so a browser can trust the edge without warnings
 edge-ca:
