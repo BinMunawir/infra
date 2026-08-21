@@ -32,7 +32,14 @@ spec:
       tls:
         mode: Terminate
         certificateRefs:
-          - kind: Secret
+          # `group: ""` is the core API group, and it is spelled out for the
+          # same reason every default in ../dev-local/routes.yaml is: Argo
+          # applies this listener list server-side and owns it ATOMICALLY, so
+          # the CRD's defaulted fields come back as part of what Argo manages
+          # and a manifest that omits them is permanently OutOfSync while
+          # applying cleanly every time. See the note in routes.yaml.
+          - group: ""
+            kind: Secret
             name: maal-edge-tls
       allowedRoutes:
         # Routes attach from the service namespaces they front, so each route

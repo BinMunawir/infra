@@ -80,6 +80,24 @@ server:
             createDatabase: false
             manageSchema: true
 
+    # A Temporal server starts with NO namespaces. Nothing in the schema setup
+    # creates one, so without this a worker connects, registers, and dies on
+    # "Namespace default is not found" — which reads like a config typo rather
+    # than a missing object.
+    #
+    # `default` because that is what maal-business and the Temporal SDK both
+    # assume (see ../../envs/dev-local/maal-business.yaml). Giving Maal its own
+    # namespace is the right move before this is anything but dev, and it is a
+    # two-sided change: this list and every service's Temporal.Namespace.
+    #
+    # The job is idempotent — `namespace describe || namespace create` — so it
+    # is safe on every sync, not just the first.
+    namespaces:
+      create: true
+      namespace:
+        - name: default
+          retention: 3d
+
 # Reachable at https://temporal.maal.local:8080 through the edge Gateway —
 # see ../../edge/dev-local/routes.yaml.
 web:

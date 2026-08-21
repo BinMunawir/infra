@@ -12,6 +12,20 @@
 #
 # Resolve these locally:
 #   just hosts        # prints the /etc/hosts lines
+#
+# ─── why every default is written out ──────────────────────────────────────
+# `parentRefs` and `rules` are ATOMIC lists in the HTTPRoute schema, and this
+# Application syncs with ServerSideApply=true. Argo therefore owns each list
+# whole, and the fields the CRD defaults — parentRefs[].group/.kind,
+# backendRefs[].group/.kind/.weight, and the implicit `matches` PathPrefix "/"
+# — land inside a subtree Argo believes it manages. A manifest that leaves them
+# out applies successfully and then reads OutOfSync forever, because Argo
+# compares what it owns in the cluster against a Git copy that is missing half
+# of it. `kubectl diff` shows nothing, which is what makes it confusing.
+#
+# So: state the defaults. That is the honest declarative position anyway — the
+# routing table is fully described here rather than half here and half in the
+# API server's defaulting rules.
 ---
 # Keycloak's admin console and OIDC endpoints.
 apiVersion: gateway.networking.k8s.io/v1
@@ -21,15 +35,24 @@ metadata:
   namespace: maal-keycloak
 spec:
   parentRefs:
-    - name: maal-edge
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: maal-edge
       namespace: maal-edge
       sectionName: https
   hostnames:
     - keycloak.maal.local
   rules:
-    - backendRefs:
-        - name: keycloak-keycloakx-http
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: keycloak-keycloakx-http
           port: 80
+          weight: 1
 ---
 # Temporal Web — workflow histories, which is the only way to debug a worker.
 apiVersion: gateway.networking.k8s.io/v1
@@ -39,12 +62,21 @@ metadata:
   namespace: maal-temporal
 spec:
   parentRefs:
-    - name: maal-edge
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: maal-edge
       namespace: maal-edge
       sectionName: https
   hostnames:
     - temporal.maal.local
   rules:
-    - backendRefs:
-        - name: temporal-web
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: temporal-web
           port: 8080
+          weight: 1

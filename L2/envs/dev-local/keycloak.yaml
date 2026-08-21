@@ -57,15 +57,13 @@ extraEnv: |
       secretKeyRef:
         name: keycloak-db
         key: KC_DB_PASSWORD
-  - name: KC_HEALTH_ENABLED
-    value: "true"
-  - name: KC_METRICS_ENABLED
-    value: "true"
-  # Terminating TLS at the edge Gateway means Keycloak sees plaintext and must
-  # be told to trust the forwarded proto, or it builds redirect URLs on http://
-  # and the OIDC flow breaks in a way that looks like a client misconfiguration.
-  - name: KC_PROXY_HEADERS
-    value: xforwarded
+  # NOTHING THAT THE CHART ALSO SETS. KC_HEALTH_ENABLED, KC_METRICS_ENABLED and
+  # KC_PROXY_HEADERS all belong to chart values (`health`, `metrics`, `proxy`
+  # below) and are rendered from them unconditionally. Repeating one here does
+  # not override it — it appends a second entry with the same name, and
+  # ServerSideApply rejects the whole StatefulSet with "duplicate entries for
+  # key [name=…]". extraEnv is for vars the chart has no opinion about.
+  #
   # Initial admin. Keycloak 26 reads KC_BOOTSTRAP_ADMIN_*; the KEYCLOAK_ADMIN_*
   # pair is the pre-26 spelling, kept alongside so an image bump in either
   # direction still boots with an admin. The Secret carries both keys — see
@@ -94,6 +92,22 @@ extraEnv: |
 # Off: the database is external. This subchart would create a second one.
 postgresql:
   enabled: false
+
+# Terminating TLS at the edge Gateway means Keycloak sees plaintext and must be
+# told to trust the forwarded proto, or it builds redirect URLs on http:// and
+# the OIDC flow breaks in a way that looks like a client misconfiguration.
+# `mode` is the value of KC_PROXY_HEADERS; the chart renders the env var itself.
+proxy:
+  enabled: true
+  mode: xforwarded
+  http:
+    enabled: true
+
+# Both default to true in the chart and are the source of the KC_METRICS_ENABLED
+# and KC_HEALTH_ENABLED env vars. Stated here because the probes below depend on
+# `health` being on, which is not obvious from the probe block alone.
+metrics:
+  enabled: true
 
 resources:
   requests:
