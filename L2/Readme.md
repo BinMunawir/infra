@@ -35,26 +35,28 @@ The consequences are the point:
 
 | | Namespace | Source | Status |
 |---|---|---|---|
-| **edge** | `maal-edge` | `edge/dev-local/` | Gateway + TLS + routes |
-| **Temporal** | `maal-temporal` | `go.temporal.io/helm-charts` `1.6.0` | wired, unverified |
-| **Keycloak** | `maal-keycloak` | `codecentric` keycloakx `7.2.3` | wired, unverified |
-| **maal-business** | `maal-business` | `../client` | reference service |
+| **edge** | `maal-edge` | `edge/dev-local/` | Gateway + TLS + routes, verified end to end |
+| **Temporal** | `maal-temporal` | `go.temporal.io/helm-charts` `1.6.0` | running against external Postgres |
+| **Keycloak** | `maal-keycloak` | `codecentric` keycloakx `7.2.3` | running against external Postgres |
+| **maal-business** | `maal-business` | `../client` | reference service, **running** |
 | **maal-stream-ph** | `maal-stream-ph` | `../maalstream_ph` | **parked, 0 replicas** |
 | ~~maal-ledger~~ | — | `../ledger` | **parked, not in the catalog** |
 | ~~Hyperswitch~~ | — | `juspay` hyperswitch-app | **parked, not in the catalog** |
 
-"Wired, unverified" means the manifests render and validate against real CRD
-schemas, but nothing has been run against a live cluster.
+`just verify` is what backs that column — it checks the contract, the
+generators, convergence, every ExternalSecret, every workload against its
+*declared* replica count, and finally makes a real HTTPS request through the
+gateway. See "Verifying" below.
 
-## Why nothing runs yet
+## What is still parked, and why
 
-All three service repos need work before any of them can start. This is stated
-here rather than discovered at deploy time.
+`maal-business` runs. The other two do not, and the reasons live in the service
+repos rather than here — stated so they are not rediscovered at deploy time.
 
 | Repo | Blocker |
 |---|---|
-| `client` | No Dockerfile, and **not a git repository at all** — no `.git`, no remote. Its Temporal and Postgres wiring are correct; it is the only one that would work given an image. |
-| `maalstream_ph` | `temporal.Dial()` hardcodes `client.DefaultHostPort` and never imports `config`. That is a compile-time constant, so **no env var can redirect it** — a pod dials itself, `log.Fatalf`s, and crash-loops. Also no Dockerfile. |
+| `client` | None any more — it has a Dockerfile and runs. Still **not a git repository at all** (no `.git`, no remote), so its image is only ever built from the working tree. |
+| `maalstream_ph` | `temporal.Dial()` hardcodes `client.DefaultHostPort` and never imports `config`. That is a compile-time constant, so **no env var can redirect it** — a pod would dial itself, `log.Fatalf`, and crash-loop. Un-parking is a repo change (a Temporal config block plus the `if == "" { default }` fallbacks), then `replicas: 1`. |
 | `ledger` | Hardcodes TigerBeetle at `127.0.0.1:4000` in `internal/adapters/tb/helpers.go:14` and **panics** when it cannot connect. Needs a TigerBeetle instance *and* a config block in the repo. |
 
 **TigerBeetle is not deferred** — `ledger` already imports `tigerbeetle-go` and
@@ -198,16 +200,19 @@ does not change the Deployment spec: Argo reports Synced and the old pods keep
 running. Cloud envs use an immutable tag — a commit SHA or a digest — and the
 values change is what triggers the rollout.
 
-**Only `ledger` has a Dockerfile** — and `ledger` is parked, so today
-`just images` can build an image for nothing else. `client` and `maalstream_ph`
-need one; the recipe says so rather than half-succeeding.
+All three repos have a Dockerfile, so `just images` builds all three. They are
+deliberately the same shape, because the chart assumes it: binary at
+`/app/<name>`, `config/*.yml` at `/app/config`, `WORKDIR /app`, `USER 1001`
+(which `podSecurityContext.runAsUser` pins). Shipping those YAML files matters —
+`config.Load()` panics if `config/<ENV>.yml` is missing relative to
+`SERVICE__ROOT`, even though the chart mounts a ConfigMap over that directory
+in-cluster.
 
-Copy `ledger/Dockerfile` and change the `./cmd/<entrypoint>` target — the chart
-already assumes that layout (binary at `/app/<name>`, `config/*.yml` at
-`/app/config`, `USER 1001`). Shipping those YAML files matters: `config.Load()`
-panics if `config/<ENV>.yml` is missing relative to `SERVICE__ROOT`. Note
-`client` and `maalstream_ph` are pure Go and can use `CGO_ENABLED=0`; only
-`ledger` needs cgo, for TigerBeetle.
+Each builds **only `cmd/worker`**. The other entrypoints run once and exit, so
+they are Jobs at most, never Deployments. `client` and `maalstream_ph` are pure
+Go and build with `CGO_ENABLED=0`; only `ledger` needs cgo, for TigerBeetle.
+
+Adding a service: copy a Dockerfile, change the `./cmd/<entrypoint>` target.
 
 Cloud envs set `image.registry` to an ECR/GAR host and the same values files
 become pulls.
@@ -219,15 +224,51 @@ cd ../L0 && just local-up       # cluster + contract
 cd ../L1 && just up             # platform  (needs a deploy key + pushed branch)
 cd ../L2
 # create the databases the values files name — bootstrap/up.sh lists the hosts
-just images                     # build + load what exists
+just images                     # build + load all three
 just up                         # verify contract + L1, apply the root
-just status
 just edge-port                  # once the gateway exists
+just verify                     # ← the check that actually answers "is it up?"
 ```
 
 `bootstrap/up.sh` refuses to run if L1's CRDs are missing, and names which ones
 — because the alternative is every Application failing with `no matches for
 kind` and no clue why.
+
+The databases are the step with no automation and no in-cluster signal. For the
+dev-local defaults — a `postgres:16` container on the laptop, which is what
+`host.docker.internal` resolves to — that is:
+
+```sql
+CREATE ROLE temporal  LOGIN PASSWORD '…';
+CREATE ROLE keycloak  LOGIN PASSWORD '…';
+CREATE ROLE maaladmin LOGIN PASSWORD '…';
+CREATE ROLE phadmin   LOGIN PASSWORD '…';
+CREATE DATABASE temporal            OWNER temporal;
+CREATE DATABASE temporal_visibility OWNER temporal;
+CREATE DATABASE keycloak            OWNER keycloak;
+CREATE DATABASE maalbizdb           OWNER maaladmin;
+CREATE DATABASE phdb                OWNER phadmin;
+```
+
+The passwords must match `secrets/dev-local/cluster-secret-store.yaml`, which is
+the only place they are written down.
+
+## Verifying
+
+```sh
+just drift      # is every maal Application Synced+Healthy? (cheap, CI-usable)
+just verify     # the full eight-section check
+```
+
+`drift` is necessary and not sufficient, and for this layer the gap is wide:
+every database is external, so a missing one shows up as a schema job retrying
+behind a green Application; and a service parked at `replicas: 0` is
+legitimately green with no pods, so "pods are running" is not a signal either
+way. `verify` walks the contract, L1's capabilities, the generators, the
+expected app matrix, convergence, every ExternalSecret, every workload against
+its **declared** replica count, and the edge — ending with a real HTTPS request
+through the gateway, because everything above it can pass while the edge answers
+nothing.
 
 ## Ordering
 
@@ -293,4 +334,8 @@ a port. Their values files deliberately set no `Srv` block and no Service.
 | Schema job retrying forever | the external database or role does not exist yet — see the top of its values file |
 | New image, old behaviour | `just restart <service>` — `:dev` is mutable |
 | Nothing reachable from the laptop | `just edge-port`, then `just hosts` |
+| Port 8080 connects but every TLS handshake fails | 30080 is pinned to the wrong Service port. istiod puts `status-port` first, so a by-index patch grabs the readiness listener. `just edge-port` selects by name and repairs it |
+| An upstream chart rejects a values key with `fail` | the chart moved it — check its `UPGRADING.md`. Temporal 1.6.0 hard-fails on the pre-`v1.0.0-rc.2` `cassandra`/`postgresql`/`schema.*` keys |
+| `duplicate entries for key [name=…]` on a StatefulSet | a values file's `extraEnv` repeats an env var the chart already renders. Set the chart's own value instead — appending does not override |
+| An Application retries forever against an old commit | its running sync is pinned to the revision it started on. Clear `.operation`, then patch `.status.operationState.phase` off `Running` |
 | A service can't reach another | its `allowedPrincipals` is empty by default |

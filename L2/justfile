@@ -89,6 +89,248 @@ status:
         kubectl -n "$ns" get pods 2>/dev/null || echo "  (namespace not created yet)"
     done
 
+# Anything in the maal project not Synced+Healthy. Exits non-zero — usable in CI.
+#
+# SCOPED TO L2's OWN PROJECT, for the mirror of the reason L1's `drift` is
+# scoped to `platform`: Argo keeps every layer's Applications in one namespace,
+# and L2 has no business failing CI over a broken platform component.
+drift:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    export KUBECONFIG=$(just _kubeconfig)
+    bad=$(kubectl -n {{argocd_ns}} get applications \
+        -o jsonpath='{range .items[?(@.spec.project=="maal")]}{.metadata.name}{"\t"}{.status.sync.status}{"\t"}{.status.health.status}{"\n"}{end}' \
+        | awk '$2 != "Synced" || $3 != "Healthy"')
+    if [ -n "$bad" ]; then
+        echo "!! not converged:"; echo "$bad"; exit 1
+    fi
+    echo ">> all maal Applications Synced + Healthy"
+
+# `drift` asks only "is every Application Synced+Healthy". For L2 that is even
+# further from sufficient than it is for L1, because this layer's two hardest
+# failure modes are both invisible at that level:
+#
+#   - Every database is EXTERNAL. A missing database or role does not make an
+#     Application red; it makes a schema job retry behind a green one.
+#   - A workload parked at `replicas: 0` is legitimately green with no pods, so
+#     "no pods running" cannot be read as failure — nor as success.
+#
+# So this checks, in dependency order:
+#
+#   1. the L0 contract still holds     L2's env file mirrors it; both must agree
+#   2. L1's capabilities are present   same four CRDs bootstrap/up.sh demands
+#   3. the generators produced params  where a template error hides
+#   4. the expected app matrix         the fail-open case: zero Applications are
+#                                      all trivially Synced+Healthy
+#   5. every Application Synced+Healthy what `drift` covers
+#   6. secrets actually materialised   an ExternalSecret that never resolved
+#                                      leaves a workload with no credentials
+#   7. workloads at their declared size compares spec.replicas to ready, so a
+#                                      parked 0-replica service passes as 0/0
+#   8. the edge admits traffic         Gateway Programmed, routes resolved, TLS
+#                                      issued, and the NodePort the L0 contract
+#                                      promises actually pinned
+#
+# Does L2 deliver what it promises? Exits non-zero if not — usable in CI.
+verify:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    export KUBECONFIG="$(just _kubeconfig)"
+    fail=0
+    ok(){   printf '  ok    %s\n' "$*"; }
+    no(){   printf '  FAIL  %s\n' "$*"; fail=1; }
+    note(){ printf '  --    %s\n' "$*"; }
+
+    envfile="{{justfile_directory()}}/envs/{{l2_env}}.yaml"
+
+    echo "── 1. L0 contract ────────────────────────────────"
+    sc_actual="$(jq -r .storageClass {{contract}} 2>/dev/null || echo '')"
+    sc_env="$(awk '/^contract:/{f=1;next} f&&/storageClass:/{print $2;exit}' "$envfile" | tr -d '"')"
+    kubectl get nodes >/dev/null 2>&1 && ok "cluster reachable" || no "cluster unreachable"
+    if [ -z "$sc_actual" ]; then
+        no "no contract published — cd ../L0 && just {{l0_env}}-up"
+    elif [ "$sc_actual" != "$sc_env" ]; then
+        no "contract drift: envs/{{l2_env}}.yaml says '$sc_env', L0 published '$sc_actual'"
+    else
+        ok "storageClass $sc_actual matches envs/{{l2_env}}.yaml"
+    fi
+
+    echo "── 2. L1 capabilities ────────────────────────────"
+    crd(){ kubectl get crd "$1" >/dev/null 2>&1 && ok "$2" || no "$2 — CRD $1 absent; is L1 converged?"; }
+    crd externalsecrets.external-secrets.io     "External Secrets (ExternalSecret)"
+    crd authorizationpolicies.security.istio.io "Istio (AuthorizationPolicy)"
+    crd gateways.gateway.networking.k8s.io      "Gateway API (Gateway)"
+    crd certificates.cert-manager.io            "cert-manager (Certificate)"
+    kubectl -n {{argocd_ns}} get appproject platform >/dev/null 2>&1 \
+        && ok "AppProject platform" || no "AppProject platform missing — run L1's bootstrap first"
+
+    echo "── 3. generators ─────────────────────────────────"
+    # Project-scoped like sections 4 and 5. An ApplicationSet carries the
+    # project on its template, not on itself, which is why this path is a level
+    # deeper than the one in section 5.
+    sets="$(kubectl -n {{argocd_ns}} get applicationsets \
+        -o jsonpath='{range .items[?(@.spec.template.spec.project=="maal")]}{.metadata.name}{"\n"}{end}' 2>/dev/null)"
+    if [ -z "$sets" ]; then
+        no "no ApplicationSets in project maal — is maal-root synced?"
+    else
+        for s in $sets; do
+            err="$(kubectl -n {{argocd_ns}} get applicationset "$s" \
+                -o jsonpath='{.status.conditions[?(@.type=="ErrorOccurred")].status}' 2>/dev/null)"
+            if [ "$err" = "True" ]; then
+                msg="$(kubectl -n {{argocd_ns}} get applicationset "$s" \
+                    -o jsonpath='{.status.conditions[?(@.type=="ErrorOccurred")].message}' 2>/dev/null)"
+                no "appset $s: $msg"
+            else
+                ok "appset $s generating"
+            fi
+        done
+    fi
+
+    echo "── 4. expected applications ──────────────────────"
+    # The catalogs are the source of truth: every `- app:` and `- service:` must
+    # have produced an Application named <env>-<name>. Plus the two singletons
+    # the edge and secrets appsets generate, and the root itself.
+    apps="$(grep -hoE '^[[:space:]]+- (app|service): [^[:space:]]+' \
+        {{justfile_directory()}}/apps/deps-appset.yaml \
+        {{justfile_directory()}}/apps/services-appset.yaml | awk '{print $3}' | sort -u)"
+    for a in $apps; do
+        if kubectl -n {{argocd_ns}} get application "{{l2_env}}-$a" >/dev/null 2>&1; then
+            ok "application {{l2_env}}-$a"
+        else
+            no "application {{l2_env}}-$a MISSING — the generator never produced it"
+        fi
+    done
+    for a in secret-store edge; do
+        kubectl -n {{argocd_ns}} get application "{{l2_env}}-$a" >/dev/null 2>&1 \
+            && ok "application {{l2_env}}-$a" || no "application {{l2_env}}-$a MISSING"
+    done
+    kubectl -n {{argocd_ns}} get application maal-root >/dev/null 2>&1 \
+        && ok "application maal-root" || no "application maal-root MISSING — run just up"
+
+    echo "── 5. convergence ────────────────────────────────"
+    rows="$(kubectl -n {{argocd_ns}} get applications \
+        -o jsonpath='{range .items[?(@.spec.project=="maal")]}{.metadata.name}{"\t"}{.status.sync.status}{"\t"}{.status.health.status}{"\n"}{end}' 2>/dev/null)"
+    if [ -z "$rows" ]; then
+        no "no Applications exist at all"
+    else
+        while IFS=$'\t' read -r n s h; do
+            [ -z "$n" ] && continue
+            if [ "$s" = "Synced" ] && [ "$h" = "Healthy" ]; then ok "$n"
+            else no "$n  ${s:-?}/${h:-?}  — just why $n"; fi
+        done <<<"$rows"
+    fi
+
+    echo "── 6. secrets ────────────────────────────────────"
+    # The store first: every ExternalSecret in this layer names it, so if it is
+    # not Ready nothing below it can be.
+    r="$(kubectl get clustersecretstore maal-secret-store \
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)"
+    [ "$r" = "True" ] && ok "clustersecretstore maal-secret-store" \
+        || no "clustersecretstore maal-secret-store not Ready — just secrets"
+
+    es="$(kubectl get externalsecrets -A \
+        -o jsonpath='{range .items[*]}{.metadata.namespace}{"/"}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null)"
+    if [ -z "$es" ]; then
+        no "no ExternalSecrets at all — did the services and secret store sync?"
+    else
+        while IFS=$'\t' read -r name ready; do
+            [ -z "$name" ] && continue
+            [ "$ready" = "True" ] && ok "externalsecret $name" \
+                || no "externalsecret $name not Ready (${ready:-<no status>}) — is its key in the store?"
+        done <<<"$es"
+    fi
+
+    echo "── 7. workloads ──────────────────────────────────"
+    # spec.replicas vs ready, NOT "are there pods". A service parked at
+    # replicas: 0 is supposed to have none, and reading that as a failure is
+    # what would make this check untrustworthy on a correct cluster.
+    for ns in maal-temporal maal-keycloak maal-business maal-stream-ph maal-edge; do
+        rows="$(kubectl -n "$ns" get deploy,statefulset \
+            -o jsonpath='{range .items[*]}{.kind}{"/"}{.metadata.name}{"\t"}{.spec.replicas}{"\t"}{.status.readyReplicas}{"\n"}{end}' 2>/dev/null)"
+        if [ -z "$rows" ]; then
+            no "namespace $ns has no workloads at all"
+            continue
+        fi
+        while IFS=$'\t' read -r name want got; do
+            [ -z "$name" ] && continue
+            got="${got:-0}"
+            if [ "${want:-0}" -eq 0 ] 2>/dev/null; then
+                note "$ns/$name parked at 0 replicas"
+            elif [ "$got" -ge "$want" ] 2>/dev/null; then
+                ok "$ns/$name $got/$want"
+            else
+                no "$ns/$name $got/$want ready"
+            fi
+        done <<<"$rows"
+    done
+
+    echo "── 8. the edge ───────────────────────────────────"
+    r="$(kubectl -n maal-edge get certificate maal-edge-tls \
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)"
+    [ "$r" = "True" ] && ok "certificate maal-edge-tls" || no "certificate maal-edge-tls not Ready"
+
+    r="$(kubectl -n maal-edge get gateway maal-edge \
+        -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}' 2>/dev/null)"
+    [ "$r" = "True" ] && ok "gateway maal-edge programmed" \
+        || no "gateway maal-edge not Programmed — is istiod's GatewayClass there?"
+
+    # A route can be Accepted and still point at nothing, so both conditions
+    # matter: ResolvedRefs=False is the one that means "the backend Service does
+    # not exist", which is the common failure after renaming a chart release.
+    routes="$(kubectl get httproute -A \
+        -o jsonpath='{range .items[*]}{.metadata.namespace}{"/"}{.metadata.name}{"\t"}{.status.parents[0].conditions[?(@.type=="Accepted")].status}{"\t"}{.status.parents[0].conditions[?(@.type=="ResolvedRefs")].status}{"\n"}{end}' 2>/dev/null)"
+    if [ -z "$routes" ]; then
+        no "no HTTPRoutes — has {{l2_env}}-edge synced?"
+    else
+        while IFS=$'\t' read -r name acc res; do
+            [ -z "$name" ] && continue
+            if [ "$acc" = "True" ] && [ "$res" = "True" ]; then ok "httproute $name"
+            else no "httproute $name accepted=${acc:-?} resolvedRefs=${res:-?}"; fi
+        done <<<"$routes"
+    fi
+
+    # The one imperative step. Not a hard failure: nothing in the cluster
+    # depends on it — only reaching the cluster from your laptop does.
+    # The HTTPS port BY NAME — see the note on `edge-port`. Reading ports[0]
+    # here would report the status port and call a broken edge healthy.
+    want_port="$(jq -r '.lbEndpoint | split(":")[1]' {{contract}} 2>/dev/null)"
+    got_port="$(kubectl -n maal-edge get svc -l gateway.networking.k8s.io/gateway-name=maal-edge \
+        -o jsonpath='{.items[0].spec.ports[?(@.name=="https")].nodePort}' 2>/dev/null)"
+    if [ -z "$got_port" ]; then
+        no "no gateway Service with an https port — istiod has not provisioned one"
+    elif [ "$got_port" = "30080" ]; then
+        ok "gateway https nodePort 30080 — reachable at 127.0.0.1:${want_port:-8080}"
+    else
+        note "gateway https nodePort is $got_port, not 30080 — run 'just edge-port' to reach it from the laptop"
+    fi
+
+    # The only check here that leaves the cluster and comes back. Everything
+    # above can pass while the edge answers nothing, because "Programmed" means
+    # istiod accepted the config, not that a request survives the trip through
+    # the kind port mapping, the NodePort, the TLS listener and the route.
+    if command -v curl >/dev/null 2>&1; then
+        for h in keycloak temporal; do
+            code="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' \
+                --resolve "$h.maal.local:${want_port:-8080}:127.0.0.1" \
+                "https://$h.maal.local:${want_port:-8080}/" 2>/dev/null || echo 000)"
+            case "$code" in
+                2*|3*) ok "https://$h.maal.local:${want_port:-8080}/ -> $code" ;;
+                000)   no "https://$h.maal.local:${want_port:-8080}/ unreachable — 'just edge-port', then check the gateway pod" ;;
+                *)     no "https://$h.maal.local:${want_port:-8080}/ -> $code" ;;
+            esac
+        done
+    else
+        note "edge not probed (no curl)"
+    fi
+
+    echo
+    if [ "$fail" -eq 0 ]; then
+        echo ">> L2 verified — the product layer is up"
+    else
+        echo "!! L2 is NOT ready. Fix the FAIL lines above, then re-run."
+        exit 1
+    fi
+
 # ─── the edge ──────────────────────────────────────────────────────────────
 
 # Gateway + routes + certificate status
@@ -120,9 +362,33 @@ edge-port:
     svc=$(kubectl -n maal-edge get svc -l gateway.networking.k8s.io/gateway-name=maal-edge \
         -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
     test -n "$svc" || { echo "!! no gateway Service yet — has dev-local-edge synced? (just apps)" >&2; exit 1; }
-    kubectl -n maal-edge patch svc "$svc" --type=json \
-        -p '[{"op":"replace","path":"/spec/ports/0/nodePort","value":30080}]'
-    echo ">> $svc nodePort pinned to 30080 — the platform is now at https://<host>:8080"
+
+    json=$(kubectl -n maal-edge get svc "$svc" -o json)
+
+    # BY NAME, NOT BY INDEX. istiod puts `status-port` (15021) FIRST on the
+    # Service it provisions, so /spec/ports/0 is the readiness port, not HTTPS.
+    # Pinning that one leaves 30080 answering istio's status listener: the TCP
+    # connection succeeds and every TLS handshake fails with a bare protocol
+    # alert, which looks like a certificate problem and is not one.
+    i=$(jq -r '[.spec.ports[].name] | index("https") // empty' <<<"$json")
+    test -n "$i" || { echo "!! Service $svc has no port named 'https'" >&2; exit 1; }
+
+    ops="[{\"op\":\"replace\",\"path\":\"/spec/ports/$i/nodePort\",\"value\":30080}]"
+
+    # If another port on this Service is already sitting on 30080 — which is
+    # exactly what the by-index version of this recipe used to do — free it in
+    # the SAME patch. The API server refuses a duplicate allocation, so doing
+    # this in two requests would fail on the first and leave the edge down.
+    # Removing the field re-allocates it from the ephemeral range.
+    squat=$(jq -r --argjson i "$i" \
+        '[.spec.ports | to_entries[] | select(.value.nodePort == 30080 and .key != $i) | .key] | first // empty' <<<"$json")
+    if [ -n "$squat" ]; then
+        ops="[{\"op\":\"remove\",\"path\":\"/spec/ports/$squat/nodePort\"},{\"op\":\"replace\",\"path\":\"/spec/ports/$i/nodePort\",\"value\":30080}]"
+        echo ">> port $squat was holding 30080 — reassigning it"
+    fi
+
+    kubectl -n maal-edge patch svc "$svc" --type=json -p "$ops"
+    echo ">> $svc https nodePort pinned to 30080 — the platform is now at https://<host>:8080"
     just hosts
 
 # The /etc/hosts lines that make the edge hostnames resolve locally
