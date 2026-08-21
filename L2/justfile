@@ -316,23 +316,29 @@ verify:
     # resolve to 127.0.0.1 through PUBLIC DNS, so this tests exactly what a
     # browser does — lookup included. Faking the lookup would pass on a machine
     # where the browser fails.
+    #
+    # NOT `$(curl ... || echo 000)`. curl PRINTS the write-out format even when
+    # the transfer fails — "000" — and then exits non-zero, so the `||` appends
+    # a second "000" and the variable holds "000\n000". That never equals "000",
+    # so every unreachable case fell through to the success branch and reported
+    # ok. A probe that passes when the thing is down is worse than no probe.
+    probe(){ curl -sk --max-time 10 -o /dev/null -w '%{http_code}' "$@" 2>/dev/null || true; }
+
     hosts="$(kubectl get httproute -A -o jsonpath='{range .items[*]}{range .spec.hostnames[*]}{@}{"\n"}{end}{end}' 2>/dev/null | sort -u)"
     if [ -z "$hosts" ]; then
         note "no route hostnames to probe"
     elif command -v curl >/dev/null 2>&1; then
         for h in $hosts; do
             url="https://$h:${want_port:-8080}/"
-            code="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || echo 000)"
+            code="$(probe "$url")"; code="${code:-000}"
             if [ "$code" = "000" ]; then
                 # Tell "this machine has no DNS" apart from "the edge is down".
                 # nip.io is public, so an offline laptop cannot resolve it even
                 # though the gateway is perfectly healthy — and reporting that
                 # as a broken edge is exactly the false alarm that teaches
                 # people to stop trusting this check.
-                alt="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' \
-                    --resolve "$h:${want_port:-8080}:127.0.0.1" \
-                    "$url" 2>/dev/null || echo 000)"
-                case "$alt" in
+                alt="$(probe --resolve "$h:${want_port:-8080}:127.0.0.1" "$url")"
+                case "${alt:-000}" in
                     2*|3*) note "$url answers only with the lookup bypassed — the edge is fine, this machine cannot resolve nip.io (offline?)" ;;
                     *)     no   "$url unreachable — cd ../L1 && just edge-port, then check the gateway pod" ;;
                 esac

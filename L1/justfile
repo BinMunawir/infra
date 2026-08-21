@@ -279,19 +279,25 @@ verify:
     # Any name under the wildcard will do — this deliberately does NOT use a
     # route's hostname, because routes are L2's and L1 must verify without them.
     # A 404 is the correct answer from an edge with an empty routing table.
+    # NOT `$(curl ... || echo 000)`. curl PRINTS the write-out format even when
+    # the transfer fails — "000" — and then exits non-zero, so the `||` appends
+    # a second "000" and the variable holds "000\n000". That never equals "000",
+    # so every unreachable-edge case fell through to the success branch and
+    # reported ok. A probe that passes when the thing is down is worse than no
+    # probe. Let curl's own output stand, and default only if it printed nothing.
+    probe(){ curl -sk --max-time 10 -o /dev/null -w '%{http_code}' "$@" 2>/dev/null || true; }
+
     if command -v curl >/dev/null 2>&1; then
         url="https://edge-probe.127.0.0.1.nip.io:${want_port:-8080}/"
-        code="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || echo 000)"
+        code="$(probe "$url")"; code="${code:-000}"
         if [ "$code" = "000" ]; then
             # Tell "this machine has no DNS" apart from "the edge is down".
             # nip.io is public, so an offline laptop cannot resolve it even
             # though the gateway is perfectly healthy — and reporting that as a
             # broken edge is the false alarm that teaches people to stop
             # trusting this check.
-            alt="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' \
-                --resolve "edge-probe.127.0.0.1.nip.io:${want_port:-8080}:127.0.0.1" \
-                "$url" 2>/dev/null || echo 000)"
-            case "$alt" in
+            alt="$(probe --resolve "edge-probe.127.0.0.1.nip.io:${want_port:-8080}:127.0.0.1" "$url")"
+            case "${alt:-000}" in
                 000) no   "edge unreachable at $url — 'just edge-port', then check the gateway pod" ;;
                 *)   note "edge answers only with the lookup bypassed — the edge is fine, this machine cannot resolve nip.io (offline?)" ;;
             esac
