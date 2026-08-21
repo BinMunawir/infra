@@ -4,7 +4,10 @@
       "Bash(awk 'NR>=16 && NR<=20 {printf \"%2d [len=%d]\\\\n\", NR, length\\($0\\)}' README.md)",
       "Skill(update-config)",
       "Skill(update-config:*)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(cat ~/.claude/settings.json 2>/dev/null | head -60; echo \"---LOCAL---\"; cat /Users/almunawir/temp/infra/.claude/settings.local.json 2>/dev/null | head -40)",
+      "Read(//Users/almunawir/.claude/**)",
+      "Bash(kubectl -n argocd get applicationsets -o jsonpath='{range .items[?\\(@.spec.template.spec.project==\"platform\"\\)]}{.metadata.name}{\"\\\\n\"}{end}')"
     ]
   }
 }

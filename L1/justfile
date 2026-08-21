@@ -123,7 +123,11 @@ verify:
     [ "${r:-0}" -ge 1 ] 2>/dev/null && ok "argocd-application-controller" || no "argocd-application-controller not ready"
 
     echo "── 3. generators ─────────────────────────────────"
-    sets="$(kubectl -n {{argocd_ns}} get applicationsets -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null)"
+    # Project-scoped like sections 4 and 5: L2's ApplicationSets share this
+    # namespace, and a broken L2 generator must not be reported as an L1
+    # failure. An ApplicationSet carries the project on its template, not on
+    # itself, which is why this path is a level deeper than the one below.
+    sets="$(kubectl -n {{argocd_ns}} get applicationsets -o jsonpath='{range .items[?(@.spec.template.spec.project=="{{project}}")]}{.metadata.name}{"\n"}{end}' 2>/dev/null)"
     if [ -z "$sets" ]; then
         no "no ApplicationSets — is the root app applied?"
     else
