@@ -212,12 +212,22 @@ cd ../L0 && just local-up
 cd ../L1
 ```
 
-1. **Create a deploy key** and add it to the repo (read-only is enough):
+1. **Give Argo a key for this repo.** Argo clones from inside the cluster, so it
+   cannot borrow your ssh-agent — the private key is copied into a Secret.
+
+   On `local`, nothing to do: it falls back to `~/.ssh/id_ed25519` if no deploy
+   key exists. The kind node is disposable and only you can reach its etcd.
+
+   **On any cloud env, mint a dedicated read-only deploy key.** There is no
+   fallback there, by design — a personal key in a shared cluster's etcd is
+   write access to every repo you own, one `kubectl get secret` away:
    ```sh
    ssh-keygen -t ed25519 -N '' -C 'argocd@maal' -f ~/.ssh/maal_argocd_deploy
    pbcopy < ~/.ssh/maal_argocd_deploy.pub
    # paste at https://github.com/BinMunawir/infra/settings/keys
    ```
+   A deploy key present at that path always wins over the local fallback, and
+   `ARGOCD_SSH_KEY=/some/other/key` overrides both. `up.sh` logs which it picked.
 2. `just up` — verifies the contract, installs pinned Argo, registers the key,
    applies the AppProject and the app-of-apps root.
 3. **Commit + push** `bootstrap/argocd/install.yaml` so the self-managing `argocd`

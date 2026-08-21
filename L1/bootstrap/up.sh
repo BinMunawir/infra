@@ -15,8 +15,26 @@ REPO_URL="git@github.com:BinMunawir/infra.git"
 L0_ENV="${L0_ENV:-local}"
 L1_ENV="${L1_ENV:-dev-local}"
 
-# SSH deploy key with read access to REPO_URL. Never inside the repo.
-SSH_KEY="${ARGOCD_SSH_KEY:-${HOME}/.ssh/maal_argocd_deploy}"
+# SSH key with read access to REPO_URL. Never inside the repo.
+#
+# The private key is copied into a Secret in etcd, so on a cloud cluster this
+# must be a dedicated read-only deploy key: a personal key there would put
+# write access to every repo the operator owns one `kubectl get secret` away.
+#
+# Locally the trade is different — the cluster is a disposable kind node on the
+# operator's own laptop, and etcd is a file in a container only they can reach
+# — so `local` falls back to the personal key rather than making everyone mint
+# a deploy key to run a throwaway cluster. Cloud envs get no such fallback and
+# still fail closed below.
+if [[ -n "${ARGOCD_SSH_KEY:-}" ]]; then
+  SSH_KEY="${ARGOCD_SSH_KEY}"
+elif [[ -f "${HOME}/.ssh/maal_argocd_deploy" ]]; then
+  SSH_KEY="${HOME}/.ssh/maal_argocd_deploy"
+elif [[ "${L0_ENV}" == "local" && -f "${HOME}/.ssh/id_ed25519" ]]; then
+  SSH_KEY="${HOME}/.ssh/id_ed25519"
+else
+  SSH_KEY="${HOME}/.ssh/maal_argocd_deploy"   # absent — the check below explains
+fi
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 L1="$(cd "${HERE}/.." && pwd)"
@@ -72,9 +90,11 @@ then add it at:
   https://github.com/BinMunawir/infra/settings/keys   (read-only is enough)
 
 Override the path with ARGOCD_SSH_KEY=/some/other/key.
+On L0_ENV=local this also accepts ~/.ssh/id_ed25519; neither was found.
 EOF
 )"
 ssh-keygen -y -f "${SSH_KEY}" >/dev/null 2>&1 || die "${SSH_KEY} is not a usable private key (passphrase-protected keys are not supported)"
+log "repo key: ${SSH_KEY}"
 
 # --- vendor Argo (pinned) on first run -------------------------------------
 # install.yaml is kept byte-identical to the upstream release; our own changes

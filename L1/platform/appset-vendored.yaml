@@ -22,6 +22,9 @@ spec:
               revision: main
               files:
                 - path: L1/envs/*.yaml
+                # Recursive glob — see the note in appset.yaml.
+                - path: L1/envs/*/*.yaml
+                  exclude: true
 
           - list:
               elements:

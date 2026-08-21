@@ -30,6 +30,13 @@ spec:
               revision: main
               files:
                 - path: L1/envs/*.yaml
+                # Argo's file glob is RECURSIVE — `*` crosses `/` — so the line
+                # above also matches the per-component values in envs/<env>/.
+                # Those carry no `stage`/`provider`, and under missingkey=error
+                # one such match fails the whole generator, yielding zero
+                # Applications. Exclude them explicitly.
+                - path: L1/envs/*/*.yaml
+                  exclude: true
 
           # ── dimension 2: the component catalog ─────────────────────────
           # `wave` orders components within an env — see the ordering note in
