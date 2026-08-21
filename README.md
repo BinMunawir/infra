@@ -59,12 +59,12 @@ tree.
 | L0 local (kind) | working, verified end to end |
 | L0 aws (EKS) | unvalidated skeleton — never applied, never `tofu plan`ed |
 | L0 gcp (GKE) | unvalidated skeleton — same |
-| L1 | written and bootstraps; needs a deploy key + a pushed branch to converge |
+| L1 | working, verified end to end — all components Synced+Healthy, capabilities smoke-tested, mesh CA cryptographically verified. Needs a deploy key + a pushed branch to converge. |
 | L2 | written; charts render and validate against real CRD schemas, nothing run yet |
 | L2 services | `maal-business` is the only one in the catalog. `maal-ledger` and `maal-stream-ph` are parked — see [L2/Readme.md](L2/Readme.md#why-nothing-runs-yet). None can start until their repos gain Dockerfiles and config fixes. |
 | Databases | **external, not in this repo's scope.** L2 names hosts and pulls credentials; you create the databases. |
-| Mesh CA | istiod still self-signs. The cert-manager chain is written and parked in [`L1/platform/mesh-ca/`](L1/platform/mesh-ca/) — the largest open gap. |
-| Observability | none. `just status` and Argo health are the only signals — the second-largest gap. |
+| Mesh CA | **done.** istiod's CA server is off; `cert-manager-istio-csr` signs every mesh certificate from the chain in [`L1/platform/mesh-ca/`](L1/platform/mesh-ca/), verified end to end. Swap the self-signed root for Vault/PCA in cloud. |
+| Observability | none. `just status` and Argo health are the only signals — now the largest gap. |
 
 ## Conventions
 

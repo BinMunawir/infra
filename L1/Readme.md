@@ -20,8 +20,10 @@ services) is **L2**.
 | cert-manager | X.509 issuance + webhook certs | `charts.jetstack.io` | `v1.21.1` |
 | Istio `base` | CRDs + cluster roles | `istio-release…/charts` | `1.30.3` |
 | Istio `cni` (ambient) | in-pod redirection to ztunnel | `istio-release…/charts` | `1.30.3` |
-| `istiod` (ambient) | control plane | `istio-release…/charts` | `1.30.3` |
+| `istiod` (ambient) | control plane — **not** a CA any more | `istio-release…/charts` | `1.30.3` |
 | `ztunnel` (ambient) | node proxy — mesh-wide L4 mTLS | `istio-release…/charts` | `1.30.3` |
+| mesh-ca | the mesh's cert-manager CA chain | this repo, `platform/mesh-ca/` | — |
+| istio-csr | signs every mesh certificate from that chain | `charts.jetstack.io` | `v0.17.0` |
 | External Secrets operator | enables L2 `ExternalSecret`s | `charts.external-secrets.io` | `2.9.0` |
 | Gateway API CRDs | `Gateway`/`HTTPRoute` kinds for the edge | vendored `kubernetes-sigs/gateway-api` | `v1.6.1` |
 
@@ -68,7 +70,7 @@ L1/
 │   ├── appset.yaml               ← the matrix: envs × Helm components
 │   ├── appset-vendored.yaml      the same matrix for vendored manifests
 │   ├── argocd.yaml               Argo manages Argo (hub only, not per-env)
-│   └── mesh-ca/                  PARKED — not synced (root app uses recurse:false)
+│   └── mesh-ca/                  the mesh CA chain — a component in appset-vendored
 ├── vendor/
 │   └── gateway-api/              pinned CRDs — `just vendor-gateway-api`
 ├── root/
@@ -180,6 +182,20 @@ just progressive     # verifies it is actually on, rather than turning it on
 If it ever reads OFF, ordering has silently fallen back to retry-with-backoff.
 That is a working state, not a broken one — just a noisier one.
 
+The waves, and why each one waits:
+
+| Wave | Components | Why not earlier |
+|---|---|---|
+| 0 | cert-manager, istio-base, gateway-api | nothing to wait for |
+| 1 | mesh-ca, istio-cni, external-secrets | the CA needs cert-manager's CRDs + webhook |
+| 2 | istio-csr | needs the issuer from wave 1 |
+| 3 | istiod | starts self-signed if istio-csr is not already serving |
+| 4 | ztunnel | needs istiod |
+
+Waves 2–4 exist entirely because of the mesh CA — see below. `mesh-ca` sits in
+the *vendored* appset, which has no `RollingSync` strategy, so its wave is an
+annotation only and it relies on retry to converge on a cold cluster.
+
 ## Mesh: ambient, not sidecar
 
 Ambient's **ztunnel gives mesh-wide L4 mTLS with no sidecars** — near-zero
@@ -192,16 +208,35 @@ To switch to **sidecar** mode: drop the `ztunnel` element from the catalog, drop
 `profile: ambient` from `envs/*/istiod.yaml` and `envs/*/istio-cni.yaml`, and
 label namespaces for injection in L2. One redirect, contained to this layer.
 
-**Mesh CA:** istiod still self-signs, so the mesh root is regenerated if
-`istio-ca-secret` is ever lost — at which point mTLS breaks mesh-wide until every
-pod rotates. The cert-manager chain that fixes this is **written and parked** in
-[`platform/mesh-ca/`](platform/mesh-ca/), outside the synced path, because the
-last step depends on which Secret layout istiod accepts and that needs verifying
-against a live cluster rather than guessing. Its README has both options —
-`cert-manager-istio-csr` (the right answer) and a plugged-in `cacerts` (the fast
-one) — and the commands to check which CA istiod actually ended up using.
+**Mesh CA: cert-manager, not istiod.** istiod's CA server is off
+(`ENABLE_CA_SERVER=false`) and every certificate in the mesh — ztunnel's
+included — is signed by `cert-manager-istio-csr` from the chain in
+[`platform/mesh-ca/`](platform/mesh-ca/):
 
-This is the largest remaining gap in L1.
+```
+maal-mesh-root (10y, offline in cloud) ──▶ maal-mesh-intermediate (1y) ──▶ istio-csr ──▶ workloads
+```
+
+This closes what was L1's largest gap. istiod's default is to self-sign a root,
+hold it in `istio-ca-secret`, and **regenerate it if that Secret is ever lost** —
+after which every workload certificate chains to a root nothing else trusts and
+mesh mTLS is broken until every pod rotates, with no way to bring the old root
+back. The root now has a lifecycle, an owner, and a rotation path.
+
+Two details worth knowing before touching it:
+
+- **ztunnel must be told too.** `caAddress` in `envs/*/ztunnel.yaml` pairs with
+  `caTrustedNodeAccounts` in `envs/*/istio-csr.yaml`. Miss either and every
+  component still reports Healthy while no ambient workload gets a certificate.
+- **istio-csr runs in `istio-system`**, not the chart's default namespace, so it
+  can mount the root it publishes as the trust bundle. That is what removes the
+  imperative Secret-copying step the upstream guide needs.
+
+`just verify` section 7 asserts the mesh is actually using this CA rather than a
+self-signed one — the failure it guards against is invisible in Application
+health. [`platform/mesh-ca/README.md`](platform/mesh-ca/README.md) has the wave
+ordering, how to read a live workload's certificate out of ztunnel, and the
+swap to a Vault/PCA root for cloud.
 
 ## Run it
 

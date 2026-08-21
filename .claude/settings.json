@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(awk 'NR>=16 && NR<=20 {printf \"%2d [len=%d]\\\\n\", NR, length\\($0\\)}' README.md)",
+      "Skill(update-config)",
+      "Skill(update-config:*)",
+      "Bash(git push *)"
+    ]
+  }
+}

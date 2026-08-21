@@ -176,6 +176,40 @@ verify:
     crd gateways.gateway.networking.k8s.io      "Gateway API (Gateway)"
     crd certificates.cert-manager.io            "cert-manager (Certificate)"
 
+    echo "── 7. mesh CA ────────────────────────────────────"
+    # istiod's DEFAULT is to self-sign a mesh root and regenerate it whenever
+    # `istio-ca-secret` goes missing, which silently breaks mesh mTLS until
+    # every pod rotates. That failure is invisible from the Application status:
+    # every component reads Synced+Healthy either way. So assert the CA is the
+    # one we meant, not merely that istiod is running.
+    for c in maal-mesh-root maal-mesh-intermediate; do
+        r="$(kubectl -n istio-system get certificate "$c" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)"
+        [ "$r" = "True" ] && ok "certificate $c" || no "certificate $c not Ready — is dev-local-mesh-ca synced?"
+    done
+
+    r="$(kubectl -n istio-system get deploy cert-manager-istio-csr -o jsonpath='{.status.readyReplicas}' 2>/dev/null)"
+    [ "${r:-0}" -ge 1 ] 2>/dev/null && ok "istio-csr serving" || no "istio-csr not ready — the mesh has no CA to ask"
+
+    # The half that is easy to get wrong: istiod happily keeps its own CA server
+    # running if this env var is missing, and nothing else complains.
+    e="$(kubectl -n istio-system get deploy istiod -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="ENABLE_CA_SERVER")].value}' 2>/dev/null)"
+    [ "$e" = "false" ] && ok "istiod CA server disabled" \
+        || no "istiod is still its own CA (ENABLE_CA_SERVER=${e:-<unset>}) — check envs/{{l1_env}}/istiod.yaml"
+
+    # What every workload is actually handed. istiod's self-signed root does not
+    # carry our CN, so this distinguishes the two without parsing dates.
+    if command -v openssl >/dev/null 2>&1; then
+        s="$(kubectl -n istio-system get cm istio-ca-root-cert -o jsonpath='{.data.root-cert\.pem}' 2>/dev/null \
+             | openssl x509 -noout -subject 2>/dev/null)"
+        case "$s" in
+            *maal-mesh-root*) ok "mesh trust root is the cert-manager root" ;;
+            "")               no "no istio-ca-root-cert published — is istio-csr running?" ;;
+            *)                no "mesh trust root is NOT ours: ${s} — istiod may have self-signed" ;;
+        esac
+    else
+        printf '  --    mesh trust root unverified (no openssl)\n'
+    fi
+
     echo
     if [ "$fail" -eq 0 ]; then
         echo ">> L1 verified — the platform is up and L2 can bootstrap on it"
