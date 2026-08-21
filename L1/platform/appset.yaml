@@ -173,6 +173,11 @@ spec:
           - CreateNamespace=true
           - ServerSideApply=true   # Istio/cert-manager/ESO CRDs blow past the
                                    # 262144-byte client-side apply annotation
+          # Without this, the ignoreDifferences below only silences the diff:
+          # the server-side apply above still sends the chart's values on every
+          # sync, and the fight continues unreported — which is worse, because
+          # the Application then reads Synced while the object churns.
+          - RespectIgnoreDifferences=true
         retry:
           # Still 10, and still worth it: progressive syncs order Applications,
           # but a chart whose webhook is not yet serving still needs a second
@@ -182,3 +187,27 @@ spec:
             duration: 10s
             factor: 2
             maxDuration: 3m
+
+      # THE ONE FIELD THE CLUSTER OWNS, NOT GIT.
+      #
+      # Istio's charts render these webhooks with `failurePolicy: Ignore` and an
+      # empty caBundle, and the chart says in a comment next to the field that
+      # istiod patches both once its certificate is ready. With selfHeal on and
+      # no exception, Argo reverts that patch, istiod re-applies it, and the
+      # object churns forever — observed here at ~4 writes/10s, generation past
+      # 260 in fifteen minutes.
+      #
+      # The cost is not just noise. The Application never reads Synced, so
+      # RollingSync never leaves wave 0, and ztunnel in wave 2 waits behind it
+      # indefinitely. A mesh with no dataplane, from a webhook field.
+      #
+      # Scoped to the two fields istiod actually owns: everything else about
+      # these webhooks — the rules, the selectors — still reconciles from Git.
+      # cert-manager's cainjector does the same thing to its own webhook, so
+      # this covers that too rather than waiting for it to bite.
+      ignoreDifferences:
+        - group: admissionregistration.k8s.io
+          kind: ValidatingWebhookConfiguration
+          jqPathExpressions:
+            - '.webhooks[]?.failurePolicy'
+            - '.webhooks[]?.clientConfig.caBundle'
