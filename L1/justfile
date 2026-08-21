@@ -8,6 +8,15 @@ set shell := ["bash", "-uc"]
 argocd_ns := "argocd"
 l0_env    := env_var_or_default("L0_ENV", "local")
 l1_env    := env_var_or_default("L1_ENV", "dev-local")
+
+# The AppProject that marks an Application as L1's. It is the layer boundary:
+# L2's Applications live in project `maal` and are not L1's to pass judgement
+# on. Used by `drift` and `verify` — see the note above `drift`.
+#
+# The project, not the platform.maal/stage label: that label is applied by the
+# component appsets only, so it misses `argocd` and `platform-root` — the two
+# whose failure matters most.
+project   := "platform"
 contract  := justfile_directory() / ".." / "L0" / l0_env / "contract.json"
 
 _default:
@@ -52,17 +61,23 @@ watch:
     @KUBECONFIG=$(just _kubeconfig) kubectl -n {{argocd_ns}} get applications -o wide -w
 
 # Anything not Synced+Healthy right now. Exits non-zero if so — usable in CI.
+#
+# SCOPED TO L1's OWN PROJECT. Argo keeps every layer's Applications in one
+# namespace, so an unfiltered query answers "is anything in this cluster
+# broken", not "is L1 broken". A half-finished L2 then makes L1 report itself
+# as not converged while all seven of its components are green — which is a
+# lie in CI, and the kind that trains people to ignore the check.
 drift:
     #!/usr/bin/env bash
     set -uo pipefail
     export KUBECONFIG=$(just _kubeconfig)
     bad=$(kubectl -n {{argocd_ns}} get applications \
-        -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.sync.status}{"\t"}{.status.health.status}{"\n"}{end}' \
+        -o jsonpath='{range .items[?(@.spec.project=="{{project}}")]}{.metadata.name}{"\t"}{.status.sync.status}{"\t"}{.status.health.status}{"\n"}{end}' \
         | awk '$2 != "Synced" || $3 != "Healthy"')
     if [ -n "$bad" ]; then
         echo "!! not converged:"; echo "$bad"; exit 1
     fi
-    echo ">> all Applications Synced + Healthy"
+    echo ">> all {{project}} Applications Synced + Healthy"
 
 # `drift` asks only "is every Application Synced+Healthy". That is necessary,
 # not sufficient, and it FAILS OPEN: an ApplicationSet whose generator errored
@@ -138,8 +153,10 @@ verify:
     done
 
     echo "── 5. convergence ────────────────────────────────"
+    # Project-scoped, for the reason spelled out above `drift`: L2's
+    # Applications share this namespace and are not L1's to pass or fail on.
     rows="$(kubectl -n {{argocd_ns}} get applications \
-        -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.sync.status}{"\t"}{.status.health.status}{"\n"}{end}' 2>/dev/null)"
+        -o jsonpath='{range .items[?(@.spec.project=="{{project}}")]}{.metadata.name}{"\t"}{.status.sync.status}{"\t"}{.status.health.status}{"\n"}{end}' 2>/dev/null)"
     if [ -z "$rows" ]; then
         no "no Applications exist at all"
     else
