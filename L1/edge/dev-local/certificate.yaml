@@ -1,0 +1,124 @@
+# TLS for the edge — dev-local.
+#
+# cert-manager's second consumer, after the mesh CA. L1 installs cert-manager
+# as a capability; these objects are the platform's own use of it, exactly as
+# platform/mesh-ca/manifests.yaml is.
+#
+# LOCAL: a self-signed root, held in-cluster. `Issuer`, not `ClusterIssuer` —
+# nothing here needs to be cluster-scoped, and a namespaced issuer keeps the
+# blast radius at one namespace.
+#
+# CLOUD: replace this file with an ACME issuer (DNS-01 against the zone that
+# owns `edge_hostname` from the L0 contract). gateway.yaml does not change; it
+# references `maal-edge-tls` by name either way.
+#
+# ═══ WILDCARDS ONLY MATCH ONE LABEL ════════════════════════════════════════
+#
+# RFC 6125: a wildcard replaces exactly ONE label, and only the leftmost one.
+# `*.*.example` is not a valid SAN at all — one wildcard per name, maximum.
+#
+#     *.dev.maal.example   MATCHES      temporal.dev.maal.example
+#                          DOES NOT     web.temporal.dev.maal.example
+#                                       test1.web.temporal.dev.maal.example
+#
+# So a name like `test1.web.temporal.dev.maal.example` needs EVERY intermediate
+# level enumerated as its own SAN:
+#
+#     dnsNames:
+#       - "*.dev.maal.example"                    # temporal.dev...
+#       - "*.temporal.dev.maal.example"           # web.temporal.dev...
+#       - "*.web.temporal.dev.maal.example"       # test1.web.temporal.dev...
+#
+# That list grows with every zone you nest, and — worse for this layer — each
+# entry names an application, which is exactly the upward dependency moving the
+# edge into L1 was meant to remove.
+#
+# ─── SO: FLAT NAMES ARE THE DEFAULT ────────────────────────────────────────
+# Encode the hierarchy in the label instead of in the zone:
+#
+#     test1-web-temporal.dev.maal.example      ← one wildcard covers it
+#
+# One SAN, unlimited depth, no app names in L1, and no per-preview certificate
+# issuance. This is what Vercel, Netlify and Heroku all do for preview
+# environments, for these reasons.
+#
+# ─── THE ESCAPE HATCH, IF YOU GENUINELY NEED NESTING ───────────────────────
+# Add the intermediate wildcard to `dnsNames` below AND to the listener
+# `hostname` in gateway.yaml — a listener bounds one hostname, so a second zone
+# means a second listener sharing this Secret. Note that Gateway API's own
+# hostname matching is not necessarily identical to RFC 6125's, so a route may
+# attach happily and still fail in the browser: THE CERTIFICATE IS THE TIGHTER
+# CONSTRAINT, so design to it and let route attachment follow.
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: maal-edge-selfsigned
+  namespace: maal-edge
+spec:
+  selfSigned: {}
+---
+# A local root, so the certificate below chains to something stable you can
+# trust once in a browser instead of clicking through a warning per service.
+#   just edge-ca > maal-local-ca.crt   # then trust it, if you care to
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: maal-edge-ca
+  namespace: maal-edge
+spec:
+  isCA: true
+  commonName: maal-local-ca
+  secretName: maal-edge-ca
+  duration: 87600h     # 10y — a dev root nobody wants to re-trust quarterly
+  renewBefore: 8760h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: maal-edge-selfsigned
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: maal-edge-ca
+  namespace: maal-edge
+spec:
+  ca:
+    secretName: maal-edge-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: maal-edge-tls
+  namespace: maal-edge
+spec:
+  # The Gateway's certificateRefs names this Secret.
+  secretName: maal-edge-tls
+  duration: 2160h      # 90d, ACME-shaped so local and cloud behave alike
+  renewBefore: 360h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+
+  # ONE WILDCARD, and it no longer tracks the route list — which is the whole
+  # reason this file can live in L1. Adding a service to L2 is now a route and
+  # nothing else; there is no SAN here to forget to update, and no CI check
+  # needed to catch that you did.
+  #
+  # nip.io is real public DNS: it answers any `<labels>.<ip>.nip.io` with that
+  # IP, so these names resolve on any machine with no /etc/hosts entry and no
+  # sudo. It handles multi-label prefixes too, so `a-b-c.127.0.0.1.nip.io`
+  # resolves and stays inside the single wildcard above.
+  #
+  # LOCAL ONLY: a loopback address baked into a hostname is meaningless off
+  # this laptop. A cloud env replaces this file with an ACME issuer over a real
+  # zone — and keeps exactly this shape, one wildcard over the env's domain.
+  dnsNames:
+    - "*.127.0.0.1.nip.io"
+  issuerRef:
+    name: maal-edge-ca
+    kind: Issuer
+    group: cert-manager.io

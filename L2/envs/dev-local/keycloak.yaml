@@ -20,9 +20,9 @@ replicas: 1
 # The chart still defaults relativePath to "/auth" for backwards compatibility
 # with Keycloak 16 and earlier. Keycloak 26 — which is what this chart's image
 # is — serves at the root, and every other reference in this repo assumes that:
-# ../../edge/dev-local/routes.yaml forwards the path unmodified, maal-business's
-# Keycloak.BaseURL carries no prefix, and `just urls` prints a /realms/master
-# URL. Leaving the default would 404 all three while the pod reported healthy.
+# ../../routes/dev-local/routes.yaml forwards the path unmodified and
+# maal-business's Keycloak.BaseURL carries no prefix. Leaving the default would
+# 404 both while the pod reported healthy.
 #
 # It also moves the health endpoints the probes below use: they are derived from
 # this value, so /health/ready rather than /auth/health/ready.

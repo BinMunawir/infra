@@ -6,12 +6,13 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
-  description: "L1 platform — GitOps engine + CRD-providing operators (application-agnostic)"
+  description: "L1 platform — GitOps engine, CRD-providing operators, the mesh CA, the secret store and the edge (application-agnostic)"
 
   # Enumerated, not '*'. Every entry corresponds to a repoURL in
-  # platform/appset.yaml or platform/argocd.yaml; adding a component to the
-  # catalog means adding its chart repo here too, and Argo will tell you
-  # plainly if you forget.
+  # platform/appset.yaml, platform/argocd.yaml, or one of the two per-env
+  # manifest appsets (edge, secret-store); adding a component to the catalog
+  # means adding its chart repo here too, and Argo will tell you plainly if you
+  # forget.
   sourceRepos:
     - git@github.com:BinMunawir/infra.git
     - https://charts.jetstack.io
@@ -32,6 +33,12 @@ spec:
       namespace: external-secrets
     - server: https://kubernetes.default.svc
       namespace: gateway-system
+    # The edge: the Gateway that answers at the L0 contract's lbEndpoint, and
+    # the cert-manager objects that terminate TLS in front of it. Platform, not
+    # product — L2 owns only the HTTPRoutes, which live in the service
+    # namespaces they front.
+    - server: https://kubernetes.default.svc
+      namespace: maal-edge
 
   # Deliberately '*'. These operators install CRDs, ClusterRoles, webhook
   # configurations, and APIServices; enumerating cluster-scoped kinds for four

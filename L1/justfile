@@ -51,7 +51,7 @@ status:
     kubectl -n {{argocd_ns}} get applicationsets -o wide 2>/dev/null || true
     echo
     kubectl -n {{argocd_ns}} get applications -o wide
-    for ns in istio-system cert-manager external-secrets; do
+    for ns in istio-system cert-manager external-secrets maal-edge; do
         echo "--- $ns ---"
         kubectl -n "$ns" get pods 2>/dev/null || echo "  (namespace not created yet)"
     done
@@ -67,6 +67,8 @@ watch:
 # broken", not "is L1 broken". A half-finished L2 then makes L1 report itself
 # as not converged while all seven of its components are green — which is a
 # lie in CI, and the kind that trains people to ignore the check.
+#
+# Anything in the platform project not Synced+Healthy. Non-zero exit — CI-usable
 drift:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -91,9 +93,17 @@ drift:
 #   3. the generators produced params    where a template error hides
 #   4. the expected component matrix     the fail-open case above
 #   5. every Application Synced+Healthy  what `drift` covers
-#   6. the CRDs L2 will demand           so a missing capability surfaces here,
-#                                        not as "no matches for kind" one layer
-#                                        up — same four L2/bootstrap checks
+#   6. the capabilities L2 demands       so a missing one surfaces here, not as
+#                                        "no matches for kind" one layer up.
+#                                        Includes the secret store itself, which
+#                                        is an instance and not just a CRD
+#   7. the mesh CA is ours               istiod quietly self-signing is
+#                                        invisible from Application status
+#   8. the edge admits traffic           Gateway Programmed, TLS issued, and the
+#                                        NodePort the L0 contract promises
+#                                        actually pinned. THE CONTRACT'S THIRD
+#                                        OUTPUT: without this, `lbEndpoint` names
+#                                        an address nothing answers at.
 #
 # Does L1 deliver what it promises? Exits non-zero if not — usable in CI.
 verify:
@@ -101,8 +111,9 @@ verify:
     set -uo pipefail
     export KUBECONFIG="$(just _kubeconfig)"
     fail=0
-    ok(){  printf '  ok    %s\n' "$*"; }
-    no(){  printf '  FAIL  %s\n' "$*"; fail=1; }
+    ok(){   printf '  ok    %s\n' "$*"; }
+    no(){   printf '  FAIL  %s\n' "$*"; fail=1; }
+    note(){ printf '  --    %s\n' "$*"; }
 
     echo "── 1. L0 contract ────────────────────────────────"
     sc="$(jq -r .storageClass {{contract}} 2>/dev/null || echo '')"
@@ -155,6 +166,12 @@ verify:
             no "application {{l1_env}}-$c MISSING — the generator never produced it"
         fi
     done
+    # The two singleton appsets — edge and secret-store — carry no `- component:`
+    # catalog, so the grep above cannot see them. Named explicitly.
+    for c in edge secret-store; do
+        kubectl -n {{argocd_ns}} get application "{{l1_env}}-$c" >/dev/null 2>&1 \
+            && ok "application {{l1_env}}-$c" || no "application {{l1_env}}-$c MISSING"
+    done
 
     echo "── 5. convergence ────────────────────────────────"
     # Project-scoped, for the reason spelled out above `drift`: L2's
@@ -172,13 +189,24 @@ verify:
     fi
 
     echo "── 6. capabilities L2 depends on ─────────────────"
-    # Deliberately the same four L2/bootstrap/up.sh checks — a capability that
-    # is missing should fail here, not one layer up as "no matches for kind".
+    # A superset of L2/bootstrap/up.sh's CRD checks — a capability that is
+    # missing should fail here, not one layer up as "no matches for kind".
+    # Gateway and Certificate are on this list but not L2's any more: both are
+    # this layer's own now, so L1 is where their absence has to surface.
     crd(){ kubectl get crd "$1" >/dev/null 2>&1 && ok "$2" || no "$2 — CRD $1 absent"; }
     crd externalsecrets.external-secrets.io     "External Secrets (ExternalSecret)"
     crd authorizationpolicies.security.istio.io "Istio (AuthorizationPolicy)"
     crd gateways.gateway.networking.k8s.io      "Gateway API (Gateway)"
     crd certificates.cert-manager.io            "cert-manager (Certificate)"
+
+    # The store, not just its CRD. Every ExternalSecret in L2 names it, so if it
+    # is not Ready nothing in that layer can resolve a credential — and the
+    # symptom one layer up is a workload stuck without a Secret, which reads as
+    # an application problem.
+    r="$(kubectl get clustersecretstore maal-secret-store \
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)"
+    [ "$r" = "True" ] && ok "clustersecretstore maal-secret-store" \
+        || no "clustersecretstore maal-secret-store not Ready — is {{l1_env}}-secret-store synced?"
 
     echo "── 7. mesh CA ────────────────────────────────────"
     # istiod's DEFAULT is to self-sign a mesh root and regenerate it whenever
@@ -212,6 +240,68 @@ verify:
         esac
     else
         printf '  --    mesh trust root unverified (no openssl)\n'
+    fi
+
+    echo "── 8. the edge ───────────────────────────────────"
+    # L0's contract promises an address. This is the layer that has to make
+    # something answer there — with no routes yet (those are L2's), a healthy
+    # edge returns 404, and that is a pass.
+    r="$(kubectl -n maal-edge get certificate maal-edge-tls \
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)"
+    [ "$r" = "True" ] && ok "certificate maal-edge-tls" \
+        || no "certificate maal-edge-tls not Ready — is {{l1_env}}-edge synced?"
+
+    r="$(kubectl -n maal-edge get gateway maal-edge \
+        -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}' 2>/dev/null)"
+    [ "$r" = "True" ] && ok "gateway maal-edge programmed" \
+        || no "gateway maal-edge not Programmed — is istiod's GatewayClass there?"
+
+    # The one imperative step. Not a hard failure: nothing in the cluster
+    # depends on it — only reaching the cluster from your laptop does.
+    # The HTTPS port BY NAME — see the note on `edge-port`. Reading ports[0]
+    # here would report the status port and call a broken edge healthy.
+    want_port="$(jq -r '.lbEndpoint | split(":")[1]' {{contract}} 2>/dev/null)"
+    got_port="$(kubectl -n maal-edge get svc -l gateway.networking.k8s.io/gateway-name=maal-edge \
+        -o jsonpath='{.items[0].spec.ports[?(@.name=="https")].nodePort}' 2>/dev/null)"
+    if [ -z "$got_port" ]; then
+        no "no gateway Service with an https port — istiod has not provisioned one"
+    elif [ "$got_port" = "30080" ]; then
+        ok "gateway https nodePort 30080 — reachable at 127.0.0.1:${want_port:-8080}"
+    else
+        note "gateway https nodePort is $got_port, not 30080 — run 'just edge-port' to reach it from the laptop"
+    fi
+
+    # The only check that leaves the cluster and comes back. Everything above
+    # can pass while the edge answers nothing, because "Programmed" means istiod
+    # accepted the config, not that a request survives the trip through the kind
+    # port mapping, the NodePort and the TLS listener.
+    #
+    # Any name under the wildcard will do — this deliberately does NOT use a
+    # route's hostname, because routes are L2's and L1 must verify without them.
+    # A 404 is the correct answer from an edge with an empty routing table.
+    if command -v curl >/dev/null 2>&1; then
+        url="https://edge-probe.127.0.0.1.nip.io:${want_port:-8080}/"
+        code="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || echo 000)"
+        if [ "$code" = "000" ]; then
+            # Tell "this machine has no DNS" apart from "the edge is down".
+            # nip.io is public, so an offline laptop cannot resolve it even
+            # though the gateway is perfectly healthy — and reporting that as a
+            # broken edge is the false alarm that teaches people to stop
+            # trusting this check.
+            alt="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' \
+                --resolve "edge-probe.127.0.0.1.nip.io:${want_port:-8080}:127.0.0.1" \
+                "$url" 2>/dev/null || echo 000)"
+            case "$alt" in
+                000) no   "edge unreachable at $url — 'just edge-port', then check the gateway pod" ;;
+                *)   note "edge answers only with the lookup bypassed — the edge is fine, this machine cannot resolve nip.io (offline?)" ;;
+            esac
+        else
+            # TLS terminated and something answered. 404 is expected and correct
+            # when L2 has published no routes.
+            ok "edge terminates TLS and answers ($code — 404 means no route yet, which is L2's half)"
+        fi
+    else
+        note "edge not probed (no curl)"
     fi
 
     echo
@@ -310,6 +400,106 @@ why app:
 logs-appset:
     @KUBECONFIG=$(just _kubeconfig) kubectl -n {{argocd_ns}} logs -f deploy/argocd-applicationset-controller
 
+# ─── the edge ──────────────────────────────────────────────────────────────
+#
+# The Gateway and its certificate are L1's: they are what makes the L0
+# contract's `lbEndpoint` mean something, and they exist whether or not any
+# Maal application does. The HTTPRoutes that give the edge content are L2's.
+
+# Gateway + certificate + the provisioned Service
+edge:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export KUBECONFIG=$(just _kubeconfig)
+    kubectl -n maal-edge get gateway,certificate 2>/dev/null || echo "(maal-edge not created yet)"
+    echo "--- gateway service ---"
+    kubectl -n maal-edge get svc -l gateway.networking.k8s.io/gateway-name=maal-edge 2>/dev/null || true
+    echo "--- routes (L2 owns these) ---"
+    kubectl get httproute -A 2>/dev/null || true
+
+# Pin the gateway's NodePort to 30080, which is what the L0 contract's
+# lbEndpoint (127.0.0.1:8080) maps to.
+#
+# THE ONE IMPERATIVE STEP LEFT LOCALLY. istiod provisions the gateway Service
+# and assigns its nodePort dynamically, and the Gateway API has no field to pin
+# it. Istio's manual-deployment mode (pre-create the Deployment + Service with
+# the gateway-name label) would make this declarative; that is a deliberate
+# piece of work, not a values change, so it is written down rather than guessed.
+#
+# Safe to re-run. Nothing else depends on it — only reaching the cluster from
+# your laptop does.
+#
+# Pin the gateway's NodePort to 30080, where the L0 contract says it answers
+edge-port:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export KUBECONFIG=$(just _kubeconfig)
+    svc=$(kubectl -n maal-edge get svc -l gateway.networking.k8s.io/gateway-name=maal-edge \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    test -n "$svc" || { echo "!! no gateway Service yet — has {{l1_env}}-edge synced? (just apps)" >&2; exit 1; }
+
+    json=$(kubectl -n maal-edge get svc "$svc" -o json)
+
+    # BY NAME, NOT BY INDEX. istiod puts `status-port` (15021) FIRST on the
+    # Service it provisions, so /spec/ports/0 is the readiness port, not HTTPS.
+    # Pinning that one leaves 30080 answering istio's status listener: the TCP
+    # connection succeeds and every TLS handshake fails with a bare protocol
+    # alert, which looks like a certificate problem and is not one.
+    i=$(jq -r '[.spec.ports[].name] | index("https") // empty' <<<"$json")
+    test -n "$i" || { echo "!! Service $svc has no port named 'https'" >&2; exit 1; }
+
+    ops="[{\"op\":\"replace\",\"path\":\"/spec/ports/$i/nodePort\",\"value\":30080}]"
+
+    # If another port on this Service is already sitting on 30080 — which is
+    # exactly what the by-index version of this recipe used to do — free it in
+    # the SAME patch. The API server refuses a duplicate allocation, so doing
+    # this in two requests would fail on the first and leave the edge down.
+    # Removing the field re-allocates it from the ephemeral range.
+    squat=$(jq -r --argjson i "$i" \
+        '[.spec.ports | to_entries[] | select(.value.nodePort == 30080 and .key != $i) | .key] | first // empty' <<<"$json")
+    if [ -n "$squat" ]; then
+        ops="[{\"op\":\"remove\",\"path\":\"/spec/ports/$squat/nodePort\"},{\"op\":\"replace\",\"path\":\"/spec/ports/$i/nodePort\",\"value\":30080}]"
+        echo ">> port $squat was holding 30080 — reassigning it"
+    fi
+
+    kubectl -n maal-edge patch svc "$svc" --type=json -p "$ops"
+    echo ">> $svc https nodePort pinned to 30080 — the platform is now at https://<host>:8080"
+    just urls
+
+# Where the edge answers from your laptop.
+#
+# Reads the live HTTPRoutes rather than hardcoding hostnames: the routes are
+# L2's to declare, and a list of app URLs baked into an L1 recipe would be the
+# same upward dependency that moving the Gateway here removed.
+#
+# The port comes from the L0 contract rather than being hardcoded, for the same
+# reason every other recipe here reads it: 8080 is a fact about the current
+# cluster, not about this file.
+#
+# Where the edge answers from your laptop
+urls:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export KUBECONFIG=$(just _kubeconfig)
+    port="$(jq -r '.lbEndpoint | split(":")[1]' {{contract}} 2>/dev/null || echo 8080)"
+    hosts="$(kubectl get httproute -A -o jsonpath='{range .items[*]}{range .spec.hostnames[*]}{@}{"\n"}{end}{end}' 2>/dev/null | sort -u)"
+    echo ""
+    if [ -z "$hosts" ]; then
+        echo "   No HTTPRoutes yet — the edge is up but nothing is behind it."
+        echo "   Routes are L2's: cd ../L2 && just apps"
+    else
+        for h in $hosts; do printf '   https://%s:%s/\n' "$h" "$port"; done
+    fi
+    echo ""
+    echo "   Nothing to add to /etc/hosts — nip.io resolves these publicly."
+    echo "   The certificate is signed by a local root, so a browser warns once"
+    echo "   and curl needs -k; 'just edge-ca' prints the root to trust it."
+
+# The local root certificate, so a browser can trust the edge without warnings
+edge-ca:
+    @KUBECONFIG=$(just _kubeconfig) kubectl -n maal-edge get secret maal-edge-ca \
+        -o jsonpath='{.data.tls\.crt}' | base64 -d
+
 # ─── access ────────────────────────────────────────────────────────────────
 
 # Initial Argo admin password
@@ -332,8 +522,10 @@ refresh:
     @KUBECONFIG=$(just _kubeconfig) kubectl -n {{argocd_ns}} annotate application --all \
         argocd.argoproj.io/refresh=hard --overwrite
 
-# Are progressive (wave-ordered) syncs actually on? They are configured in Git —
-# bootstrap/argocd/kustomization.yaml — so this verifies rather than patches.
+# They are configured in Git — bootstrap/argocd/kustomization.yaml — so this
+# verifies rather than patches.
+#
+# Are progressive (wave-ordered) syncs actually on?
 progressive:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -357,8 +549,10 @@ render:
     @KUBECONFIG=$(just _kubeconfig) kubectl -n {{argocd_ns}} get applications \
         -l platform.maal/stage --show-labels
 
-# Re-vendor the Gateway API CRDs. Keep the tag in sync with the `version`
-# field on the gateway-api element in platform/appset-vendored.yaml.
+# Keep the tag in sync with the `version` field on the gateway-api element in
+# platform/appset-vendored.yaml.
+#
+# Re-vendor the Gateway API CRDs at <tag>
 vendor-gateway-api tag="v1.6.1":
     @mkdir -p vendor/gateway-api
     curl -fsSL "https://github.com/kubernetes-sigs/gateway-api/releases/download/{{tag}}/standard-install.yaml" \
@@ -373,6 +567,8 @@ vendor-gateway-api tag="v1.6.1":
 # PyYAML and GitHub runners ship without a guaranteed ruby, so picking one and
 # hoping produces a lint that silently "fails" everything — which is worse than
 # no lint, because it looks like it ran.
+#
+# Check every YAML file parses (skips the vendored Argo manifests)
 lint:
     #!/usr/bin/env bash
     set -euo pipefail

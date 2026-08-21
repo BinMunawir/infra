@@ -1,14 +1,34 @@
 # What is reachable from outside — dev-local.
 #
+# The application half of the edge. L1 owns the Gateway, its listener and its
+# certificate (L1/edge/dev-local/); this file is the routing table, and it lives
+# in L2 because every entry in it names a Maal service.
+#
+# That is the Gateway API's own persona split — cluster operator owns Gateways,
+# application teams own Routes — and it is why adding a service no longer means
+# editing anything in L1.
+#
 # Each HTTPRoute lives in the namespace of the service it fronts, so its
-# backendRef is same-namespace and no ReferenceGrant is needed. The Application
-# syncing this directory targets maal-edge; Argo applies each object to the
-# namespace it declares, which the AppProject permits.
+# backendRef is same-namespace and no ReferenceGrant is needed. (ReferenceGrant
+# governs backendRefs and certificateRefs across namespaces, not parentRefs;
+# attaching to a Gateway in another namespace is controlled by that Gateway's
+# `allowedRoutes`, which is set to `from: All`.)
 #
 # Nothing here fronts a Maal Go service. maal-business is a Temporal worker with
 # no inbound port at all, and maal-ledger — the only one that serves HTTP — is
-# parked. When a service does need to be reachable, add a route beside it here
-# and a hostname to ../certificate.yaml.
+# parked. When a service does need to be reachable, add a route beside it here.
+# THAT IS THE WHOLE STEP: the certificate in L1 is a single wildcard over the
+# env's domain and does not track this list.
+#
+# ─── the naming rule ───────────────────────────────────────────────────────
+# Hostnames must be ONE label under the env's domain:
+#
+#     <name>.127.0.0.1.nip.io          ✓  covered by the wildcard
+#     <a>.<b>.127.0.0.1.nip.io         ✗  a TLS wildcard matches one label only
+#
+# Nesting needs a new SAN and a new listener in L1 for every level — see the
+# long note in L1/edge/dev-local/certificate.yaml. Use flat labels instead:
+# `web-temporal.127.0.0.1.nip.io`, not `web.temporal.127.0.0.1.nip.io`.
 #
 # ─── why nip.io ────────────────────────────────────────────────────────────
 # `*.127.0.0.1.nip.io` is real public DNS: nip.io answers any `<label>.<ip>`
@@ -22,10 +42,10 @@
 # mDNS/Bonjour, so mDNSResponder can answer ahead of /etc/hosts.
 #
 # LOCAL ONLY. These names hardcode a loopback address and are meaningless off
-# this laptop. A cloud env replaces this whole directory with routes carrying
-# real hostnames in a zone it owns — see ../../Readme.md.
+# this laptop. A cloud env replaces this directory with routes carrying real
+# hostnames in a zone it owns.
 #
-#   just urls         # prints the reachable URLs
+#   just urls         # prints the reachable URLs  (from L1)
 #
 # ─── why every default is written out ──────────────────────────────────────
 # `parentRefs` and `rules` are ATOMIC lists in the HTTPRoute schema, and this

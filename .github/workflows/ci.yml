@@ -71,10 +71,10 @@ jobs:
             /tmp/rendered/
 
       - name: Validate hand-written manifests
-        # The Argo objects, the secret stores, and the edge. `-ignore-missing-schemas`
-        # here and not above: these reference CRDs (ApplicationSet, Gateway) whose
-        # schemas move faster than the catalog, and a missing schema must not be
-        # the thing that fails a build.
+        # The Argo objects, the secret store, the edge (L1) and the routes (L2).
+        # `-ignore-missing-schemas` here and not above: these reference CRDs
+        # (ApplicationSet, Gateway) whose schemas move faster than the catalog,
+        # and a missing schema must not be the thing that fails a build.
         run: |
           kubeconform \
             -summary \
@@ -82,7 +82,8 @@ jobs:
             -ignore-missing-schemas \
             -schema-location default \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
-            L1/platform L1/root L1/envs L2/apps L2/root L2/secrets L2/edge
+            L1/platform L1/root L1/envs L1/edge L1/secrets \
+            L2/apps L2/root L2/secrets L2/routes
 
   # ─── the repo's own consistency rules ────────────────────────────────────
   conventions:

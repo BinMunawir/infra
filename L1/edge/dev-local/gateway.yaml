@@ -1,0 +1,78 @@
+# The edge Gateway — dev-local.
+#
+# THIS IS WHAT `lbEndpoint` POINTS AT. L0 maps host 127.0.0.1:8080 to NodePort
+# 30080 on the kind control-plane node (L0/local/kind.yaml); this Gateway is the
+# thing that answers there.
+#
+# ─── why this is L1 and not L2 ─────────────────────────────────────────────
+# The test is: if you deleted every Maal application, should this object still
+# exist? Yes — an edge that terminates TLS and returns 404 is a valid platform
+# state, and it is the state L0's contract promises. The Gateway is the
+# infrastructure that admits traffic; the HTTPRoutes that give it meaning are
+# the applications' own, and they live in L2 next to the services they front.
+#
+# That split is what the Gateway API was designed around: a cluster operator
+# owns Gateways, application teams own Routes. Keeping both in L2 put the
+# operator's half in the application layer and left L0 promising an address
+# that only the application layer could make answer.
+#
+# HTTPS only, on a single listener, because kind publishes exactly one port and
+# a plaintext edge would teach the wrong habit. The certificate is signed by a
+# local root, so `curl -k` — or trust the root once, `just edge-ca`.
+#
+# istiod provisions a Deployment and a Service from this object. The Service's
+# nodePort is assigned dynamically and CANNOT be pinned through the Gateway API
+# — the one imperative step left in a local bring-up is `just edge-port`, which
+# patches it to 30080. The fix is Istio's manual-deployment mode, which is a
+# deliberate piece of work rather than a values change.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: maal-edge
+  namespace: maal-edge
+  annotations:
+    # kind has no cloud load balancer, so a LoadBalancer Service would sit at
+    # <pending> forever (L0/contract.md). NodePort is what the port mapping
+    # expects. Cloud envs drop this annotation and get a real LB.
+    networking.istio.io/service-type: NodePort
+spec:
+  gatewayClassName: istio
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+
+      # ─── THE DOMAIN BOUNDARY ───────────────────────────────────────────
+      # L1 owns the domain; L2 may only claim names inside it. A route whose
+      # hostname does not intersect this one is refused attachment by istiod,
+      # so an application cannot quietly start serving a name the platform
+      # never provisioned a certificate for.
+      #
+      # This is the layering made mechanical rather than documented: without
+      # it, "L1 owns the edge" is a convention that the first hurried PR
+      # breaks silently.
+      hostname: "*.127.0.0.1.nip.io"
+
+      tls:
+        mode: Terminate
+        certificateRefs:
+          # `group: ""` is the core API group, and it is spelled out for the
+          # same reason every default in L2's routes.yaml is: Argo applies this
+          # listener list server-side and owns it ATOMICALLY, so the CRD's
+          # defaulted fields come back as part of what Argo manages and a
+          # manifest that omits them is permanently OutOfSync while applying
+          # cleanly every time.
+          - group: ""
+            kind: Secret
+            name: maal-edge-tls
+      allowedRoutes:
+        # Routes attach from the service namespaces they front, so each route
+        # sits next to its own backend and needs no ReferenceGrant —
+        # ReferenceGrant governs backendRefs and certificateRefs across
+        # namespaces, not parentRefs.
+        #
+        # `From: All` is bounded twice over: by the listener hostname above,
+        # and by L2's AppProject destination list, which is what actually
+        # decides which namespaces can exist to hold a route at all.
+        namespaces:
+          from: All

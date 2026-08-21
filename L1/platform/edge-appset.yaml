@@ -1,0 +1,98 @@
+# L1/platform/edge-appset.yaml — the way in.
+#
+# One Application per env, sourcing L1/edge/<stage>-<provider>/: the Gateway
+# that answers at the L0 contract's `lbEndpoint`, and the certificate it
+# terminates TLS with.
+#
+# ─── why this is L1 ────────────────────────────────────────────────────────
+# The edge is platform-scoped: it exists whether or not any Maal application
+# does, and L0's contract promises an address that something must answer at.
+# With this in L2, bringing up L0 + L1 left that promised address answering
+# nothing — the platform's own entry point depended on the application layer.
+# Now L0 promises an address, L1 provides the thing that answers there, and L2
+# adds routes that give it content. Each layer's contract is satisfied by the
+# layer below it.
+#
+# The HTTPRoutes stay in L2 — see L2/apps/routes-appset.yaml. That is the
+# Gateway API's own persona split: cluster operator owns Gateways, application
+# teams own Routes.
+#
+# ─── a separate ApplicationSet, not a catalog entry ────────────────────────
+# appset.yaml is Helm charts and appset-vendored.yaml is plain manifest
+# directories with a FIXED path per component. The edge needs a per-env path
+# (`L1/edge/{{.stage}}-{{.provider}}`), which the vendored appset's shared
+# template cannot express — a `manifestPath` containing template syntax is not
+# re-evaluated. Its syncPolicy also differs in two ways that matter, both
+# below. Two honest generators beat one template that branches.
+#
+# ORDERING: wave 5, after ztunnel (4). This appset carries no RollingSync
+# strategy, so that is a sync-wave annotation only and does NOT gate on the
+# other appsets' waves — same caveat as mesh-ca. A Gateway applied before
+# istiod's GatewayClass exists fails and the retry/backoff below converges it.
+# Noisy on a cold cluster, correct by the time it matters.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: platform-edge
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+
+  generators:
+    - git:
+        repoURL: git@github.com:BinMunawir/infra.git
+        revision: main
+        files:
+          - path: L1/envs/*.yaml
+          # Recursive glob — see the note in appset.yaml.
+          - path: L1/envs/*/*.yaml
+            exclude: true
+
+  template:
+    metadata:
+      name: '{{.stage}}-{{.provider}}-edge'
+      labels:
+        platform.maal/stage: '{{.stage}}'
+        platform.maal/provider: '{{.provider}}'
+        platform.maal/component: edge
+        platform.maal/wave: "5"
+      annotations:
+        argocd.argoproj.io/sync-wave: "5"
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform
+      source:
+        repoURL: git@github.com:BinMunawir/infra.git
+        targetRevision: main
+        path: L1/edge/{{.stage}}-{{.provider}}
+        directory:
+          recurse: false
+      destination:
+        server: '{{.destination.server}}'
+        namespace: maal-edge
+      syncPolicy:
+        automated:
+          # prune:false — deleting the Gateway takes the istiod-provisioned
+          # Service with it, and with it the NodePort the L0 contract promises.
+          # That is not something a generator hiccup should be able to do.
+          prune: false
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+        managedNamespaceMetadata:
+          labels:
+            # The gateway is NOT in the ambient dataplane: it is the thing that
+            # admits traffic into the mesh, and enrolling it would put ztunnel
+            # in front of its own ingress path. The absence of
+            # `istio.io/dataplane-mode: ambient` here is the load-bearing part;
+            # this label just makes the namespace's owner legible.
+            platform.maal/component: edge
+        retry:
+          limit: 10
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 3m

@@ -1,27 +1,24 @@
-# L2/apps/secrets-appset.yaml — the credentials each application needs.
+# L2/apps/routes-appset.yaml — the routing table.
 #
-# One Application per env, sourcing L2/secrets/<stage>-<provider>/: the
-# ExternalSecrets that pull an application's credentials out of the store and
-# materialise them as Secrets in that application's namespace.
+# One Application per env, sourcing L2/routes/<stage>-<provider>/: the
+# HTTPRoutes that point the platform's edge at Maal services.
 #
 # ─── what is NOT here ──────────────────────────────────────────────────────
-# The ClusterSecretStore is L1's — see L1/platform/secrets-appset.yaml. It is
-# the connection to the backend, it is cluster-scoped, and external-secrets is
-# an L1 component; holding it here forced L2's AppProject to whitelist a
-# cluster-scoped kind. Everything in this directory is namespaced and names an
-# application.
+# The Gateway, its TLS listener and its certificate are L1's — see
+# L1/platform/edge-appset.yaml. This layer owns only the routes, each of which
+# names a Maal Service and therefore could not live anywhere else without the
+# platform layer depending on the application layer.
 #
-# Syncs at wave -1: the workload waiting on a Secret never starts if the
-# ExternalSecret has not resolved. The store it names is already up — L1
-# converges first.
+# Wave 2: after the services they route to. A route whose backend Service does
+# not exist yet reports ResolvedRefs=False, and there is no reason to look at
+# that. The Gateway itself is already up — it is L1's, and L1 converges first.
 #
-# Every ExternalSecret declares its own namespace (next to the workload that
-# reads the Secret), so the destination below is only where Argo tracks the
-# Application.
+# Every route declares its own namespace (next to the Service it fronts), so
+# the destination below is only where Argo tracks the Application.
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
-  name: maal-secrets
+  name: maal-routes
   namespace: argocd
 spec:
   goTemplate: true
@@ -39,12 +36,13 @@ spec:
 
   template:
     metadata:
-      name: '{{.stage}}-{{.provider}}-app-secrets'
+      name: '{{.stage}}-{{.provider}}-routes'
       labels:
         maal/stage: '{{.stage}}'
         maal/provider: '{{.provider}}'
+        maal/wave: "2"
       annotations:
-        argocd.argoproj.io/sync-wave: "-1"
+        argocd.argoproj.io/sync-wave: "2"
       finalizers:
         - resources-finalizer.argocd.argoproj.io
     spec:
@@ -52,7 +50,7 @@ spec:
       source:
         repoURL: git@github.com:BinMunawir/infra.git
         targetRevision: main
-        path: L2/secrets/{{.stage}}-{{.provider}}
+        path: L2/routes/{{.stage}}-{{.provider}}
         directory:
           recurse: false
       destination:
@@ -60,10 +58,14 @@ spec:
         namespace: argocd
       syncPolicy:
         automated:
-          prune: false
+          # prune:true is safe here in a way it is not for the Gateway: a route
+          # that disappears from Git should disappear from the cluster, and
+          # losing one costs a 404, not the cluster's entire entry point.
+          prune: true
           selfHeal: true
         syncOptions:
           - CreateNamespace=false
+          - ServerSideApply=true
         retry:
           limit: 10
           backoff:

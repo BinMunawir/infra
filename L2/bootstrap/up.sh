@@ -48,15 +48,13 @@ done < <(grep -rl 'storageClass:' "${L2}/envs/${L2_ENV}" 2>/dev/null || true)
 log "contract verified: storageClass=${SC_ACTUAL}"
 
 # --- L1 must be there first ------------------------------------------------
-# L2 declares ExternalSecret, AuthorizationPolicy, Gateway and Certificate
-# resources. If the operators that own those kinds are missing, every
-# Application fails with an unhelpful "no matches for kind" — so check plainly
-# and say which is absent.
+# L2 declares ExternalSecret, AuthorizationPolicy and HTTPRoute resources. If
+# the operators that own those kinds are missing, every Application fails with
+# an unhelpful "no matches for kind" — so check plainly and say which is absent.
 missing=()
 kubectl get crd externalsecrets.external-secrets.io      >/dev/null 2>&1 || missing+=("External Secrets (ExternalSecret)")
 kubectl get crd authorizationpolicies.security.istio.io  >/dev/null 2>&1 || missing+=("Istio (AuthorizationPolicy)")
-kubectl get crd gateways.gateway.networking.k8s.io       >/dev/null 2>&1 || missing+=("Gateway API (Gateway)")
-kubectl get crd certificates.cert-manager.io             >/dev/null 2>&1 || missing+=("cert-manager (Certificate)")
+kubectl get crd httproutes.gateway.networking.k8s.io     >/dev/null 2>&1 || missing+=("Gateway API (HTTPRoute)")
 if (( ${#missing[@]} )); then
   die "L1 is not converged — missing CRDs: ${missing[*]}
     check: cd ${L2}/../L1 && just apps"
@@ -64,7 +62,20 @@ fi
 kubectl -n "${ARGOCD_NS}" get appproject platform >/dev/null 2>&1 \
   || die "the L1 'platform' AppProject is missing — run L1's bootstrap first"
 
-log "L1 capabilities present"
+# The two L1 INSTANCES this layer binds to BY NAME. Checking only the CRDs used
+# to be enough when L2 created its own Gateway and secret store; now that both
+# are platform-scoped, their absence is the difference between "L1 installed
+# the operators" and "L1 is actually finished". Neither failure is loud one
+# layer up: an ExternalSecret with no store sits Pending forever, and an
+# HTTPRoute with no Gateway reports Accepted=False and nothing else.
+kubectl get clustersecretstore maal-secret-store >/dev/null 2>&1 \
+  || die "the L1 ClusterSecretStore 'maal-secret-store' is missing — every ExternalSecret here would sit Pending
+    check: cd ${L2}/../L1 && just verify"
+kubectl -n maal-edge get gateway maal-edge >/dev/null 2>&1 \
+  || die "the L1 Gateway 'maal-edge' is missing — every HTTPRoute here would have no parent to attach to
+    check: cd ${L2}/../L1 && just verify"
+
+log "L1 capabilities and edge present"
 
 # --- hand off to GitOps ----------------------------------------------------
 kubectl apply -f "${L2}/root/project.yaml"
@@ -81,5 +92,6 @@ log ""
 log "NOTE: images are not in the cluster yet. Build and load them first:"
 log "      just images"
 log ""
-log "NOTE: the edge Gateway's NodePort is assigned dynamically. Pin it to the"
-log "      L0 contract's 30080 once it exists:  just edge-port"
+log "NOTE: the edge Gateway is L1's. If a route is reachable in the cluster but"
+log "      not from this laptop, its NodePort needs pinning — that lives one"
+log "      layer down now:  cd ../L1 && just edge-port"

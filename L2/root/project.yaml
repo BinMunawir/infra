@@ -36,10 +36,11 @@ spec:
       namespace: maal-hyperswitch
     - server: https://kubernetes.default.svc
       namespace: maal-business
-    # The edge: Gateway, HTTPRoutes, and the cert-manager Issuer that terminates
-    # TLS in front of them.
-    - server: https://kubernetes.default.svc
-      namespace: maal-edge
+    # NO maal-edge. The Gateway, its TLS listener and its certificate are
+    # platform-scoped and live in L1 (L1/edge/). L2 owns only the HTTPRoutes,
+    # and each of those sits in the namespace of the service it fronts — which
+    # is already listed here.
+    #
     # Parked — maal-ledger is not in the service catalog (see
     # ../apps/services-appset.yaml). Kept so re-enabling is a one-line catalog
     # change; an unused destination grants nothing on its own.
@@ -47,33 +48,29 @@ spec:
       namespace: maal-ledger
     - server: https://kubernetes.default.svc
       namespace: maal-stream-ph
-    # Where the ClusterSecretStore Application is tracked.
-    - server: https://kubernetes.default.svc
-      namespace: external-secrets
 
   # THE BOUNDARY. L2 may not create cluster-scoped resources — no CRDs, no
   # ClusterRoles, no webhooks. That is why the Gateway API CRDs went into L1:
   # keeping this list short is what stops an L2 mistake from reaching the mesh
   # or the operators.
   #
-  # Two exceptions, and only two:
+  # ONE exception, and it is purely mechanical:
   #
-  #   Namespace          every appset here sets CreateNamespace=true, and Argo
-  #                      creates that namespace AS the project. Without this
-  #                      entry every sync fails with "resource :Namespace is
-  #                      not permitted in project maal" — and it fails on the
-  #                      namespace, so nothing inside it is ever attempted.
-  #                      The `destinations` list above is what actually bounds
-  #                      which namespaces L2 may touch; this only grants the
-  #                      kind. The empty `group` is core/v1, not a wildcard.
+  #   Namespace   every appset here sets CreateNamespace=true, and Argo creates
+  #               that namespace AS the project. Without this entry every sync
+  #               fails with "resource :Namespace is not permitted in project
+  #               maal" — and it fails on the namespace, so nothing inside it is
+  #               ever attempted. The `destinations` list above is what actually
+  #               bounds which namespaces L2 may touch; this only grants the
+  #               kind. The empty `group` is core/v1, not a wildcard.
   #
-  #   ClusterSecretStore cluster-scoped by design, and the single object L2
-  #                      legitimately owns above namespace level.
+  # There used to be a second: ClusterSecretStore. It is gone because the store
+  # itself moved to L1, where the operator that owns it already lived. A
+  # boundary that needs widening to admit a platform object was telling us the
+  # object was on the wrong side of it.
   clusterResourceWhitelist:
     - group: ''
       kind: Namespace
-    - group: external-secrets.io
-      kind: ClusterSecretStore
 
   namespaceResourceWhitelist:
     - group: '*'
