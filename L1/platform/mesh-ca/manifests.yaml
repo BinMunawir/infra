@@ -1,9 +1,9 @@
-# The cert-manager half of a plugged-in Istio mesh CA.
+# The cert-manager half of the Istio mesh CA.
 #
-# INERT: this directory is not synced (the root app uses recurse: false) and is
-# not in either catalog. See README.md — the remaining step is getting the
-# material into the key layout istiod reads, which is the part that needs a live
-# cluster to verify.
+# LIVE. This directory is a component in ../appset-vendored.yaml (wave 1), so
+# Argo applies it. istio-csr (wave 2) signs every workload certificate from the
+# intermediate issued below, and istiod's own CA server is off — see
+# ../../envs/dev-local/istiod.yaml. README.md has the full story.
 #
 # What this builds:
 #
@@ -14,11 +14,22 @@
 #                              │
 #                              ▼
 #                    maal-mesh-intermediate (Certificate, isCA)
-#                              secret: maal-mesh-intermediate
+#                              │  secret: maal-mesh-intermediate
+#                              ▼
+#                    maal-mesh-intermediate (Issuer, ca:)
+#                              │
+#                              ▼
+#                         istio-csr signs workload CSRs
 #
-# istiod signs workload certs with the intermediate; the root stays offline in
+# istio-csr signs workload certs with the intermediate; the root stays offline in
 # anything but dev. In cloud, replace the selfsigned Issuer with a Vault or AWS
 # PCA issuer and delete the root Certificate — the chain below is unchanged.
+#
+# WHY ISSUERS LIVE HERE AT ALL. L1's rule is "install capabilities, not
+# instances", and ../../envs/dev-local/cert-manager.yaml says plainly that
+# issuers are policy and an L2 concern. The mesh CA is the one exception, and
+# it is not a carve-out: the mesh is L1's own workload, so its root of trust is
+# L1's to own. These issuers sign nothing but mesh identities.
 ---
 apiVersion: cert-manager.io/v1
 kind: Issuer
@@ -72,10 +83,23 @@ spec:
   privateKey:
     algorithm: ECDSA
     size: 256
-  # istiod signs SPIFFE identities under this trust domain.
-  uris:
-    - spiffe://cluster.local/ns/istio-system/sa/istiod
+  # No SPIFFE URI here. Under the plugged-in-`cacerts` design this certificate
+  # WAS istiod's own identity and carried one. Under istio-csr it is a pure
+  # signing CA — the SPIFFE identities are on the leaf certs istio-csr mints —
+  # so a URI SAN here would claim something untrue about what this key is.
   issuerRef:
     name: maal-mesh-ca
     kind: Issuer
     group: cert-manager.io
+---
+# What istio-csr actually signs from. Splitting the issuer from the certificate
+# is what lets the root be swapped for Vault/AWS PCA in cloud without istio-csr
+# changing at all: it only ever names this issuer.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: maal-mesh-intermediate
+  namespace: istio-system
+spec:
+  ca:
+    secretName: maal-mesh-intermediate

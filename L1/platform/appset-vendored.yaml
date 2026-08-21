@@ -45,6 +45,26 @@ spec:
                   namespace: gateway-system
                   wave: "0"
 
+                # The mesh's root of trust: a cert-manager CA chain that
+                # istio-csr signs workload certificates from. Not a chart —
+                # four cert-manager objects — so it belongs in this appset.
+                #
+                # ORDERING CAVEAT, WORTH KNOWING: this ApplicationSet has no
+                # RollingSync strategy, so `wave` here is a sync-wave annotation
+                # only and does NOT gate on the other appset's waves. On a
+                # cold cluster this may sync before cert-manager's CRDs are
+                # served and fail with "no matches for kind Certificate"; the
+                # retry/backoff in the template below is what converges it.
+                # Noisy on first boot, correct by the time it matters — and the
+                # alternative, merging the two appsets, costs more than it buys.
+                # No `version`: unlike gateway-api these manifests are ours, not
+                # a vendored upstream release, so there is no tag to pin. The
+                # template never reads the key.
+                - component: mesh-ca
+                  manifestPath: L1/platform/mesh-ca
+                  namespace: istio-system
+                  wave: "1"
+
   template:
     metadata:
       name: '{{.stage}}-{{.provider}}-{{.component}}'

@@ -64,12 +64,35 @@ spec:
                   namespace: istio-system
                   wave: "1"
 
+                # THE MESH CA. Replaces istiod's own CA server: istiod starts
+                # with ENABLE_CA_SERVER=false and every workload — including
+                # ztunnel — requests its certificate from here, which signs it
+                # through cert-manager from the chain in ../platform/mesh-ca.
+                #
+                # Upstream is explicit that installing istio-csr after Istio is
+                # not a supported path, because the mesh's root of trust changes
+                # underneath running workloads. It is safe on this cluster (the
+                # mesh carries no traffic yet) and it converged cleanly, but on
+                # a cluster with live workloads treat it as a planned migration
+                # with a pod rollout behind it, not a values bump.
+                #
+                # Bump: compare with `helm search repo jetstack/cert-manager-istio-csr --versions`.
+                - component: istio-csr
+                  chart: cert-manager-istio-csr
+                  repoURL: https://charts.jetstack.io
+                  version: v0.17.0
+                  namespace: istio-system
+                  wave: "2"
+
+                # Wave 3, not 1: istiod must not start until istio-csr is
+                # serving, or it comes up self-signed and stays that way until
+                # something restarts it.
                 - component: istiod
                   chart: istiod
                   repoURL: https://istio-release.storage.googleapis.com/charts
                   version: 1.30.3
                   namespace: istio-system
-                  wave: "1"
+                  wave: "3"
 
                 # NO DATABASE OPERATOR, DELIBERATELY. Every Postgres this
                 # platform talks to is external and managed outside the cluster
@@ -99,7 +122,7 @@ spec:
                   repoURL: https://istio-release.storage.googleapis.com/charts
                   version: 1.30.3
                   namespace: istio-system
-                  wave: "2"
+                  wave: "4"
 
   # Progressive sync — LIVE. The applicationset controller reads
   # `applicationsetcontroller.enable.progressive.syncs` from argocd-cmd-params-cm,
@@ -109,6 +132,10 @@ spec:
   #
   # Verify with `just progressive`. If it ever reads OFF, this block is ignored
   # and ordering falls back to retry/back-off — which converges, noisily.
+  # Five steps now, because the mesh CA sits in the middle of the mesh's own
+  # dependency chain: cert-manager (0) → mesh-ca (1, in the vendored appset) →
+  # istio-csr (2) → istiod (3) → ztunnel (4). Each step waits for the previous
+  # to go Healthy, which is what stops istiod booting self-signed.
   strategy:
     type: RollingSync
     rollingSync:
@@ -125,6 +152,14 @@ spec:
             - key: platform.maal/wave
               operator: In
               values: ["2"]
+        - matchExpressions:
+            - key: platform.maal/wave
+              operator: In
+              values: ["3"]
+        - matchExpressions:
+            - key: platform.maal/wave
+              operator: In
+              values: ["4"]
 
   template:
     metadata:

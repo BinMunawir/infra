@@ -1,0 +1,79 @@
+# istio-csr — dev-local
+#
+# cert-manager's CA server for the mesh. istiod's own CA is off; every workload
+# certificate in the mesh, ztunnel's included, is signed here from the chain in
+# ../../platform/mesh-ca/manifests.yaml.
+#
+# WHY THIS RUNS IN istio-system AND NOT cert-manager (the chart's default):
+# istio-csr needs to read two things that live in istio-system — the issuer it
+# signs from, and the root certificate it serves as the mesh trust bundle. A
+# Secret cannot be mounted across namespaces, so the upstream guide copies the
+# root into the cert-manager namespace with an imperative `kubectl create
+# secret`. Running here instead deletes that step: no copy, nothing to drift,
+# and no credential handled by a human. The cost is one non-default value
+# (certificateDNSNames below) and the caAddress every client points at.
+
+app:
+  certmanager:
+    # Where the issuer lives. Same as the chart default, stated anyway because
+    # the namespace choice above is the reason it works.
+    namespace: istio-system
+    issuer:
+      # The INTERMEDIATE, never the root. A compromise of this key is a
+      # re-issue; a compromise of the root is a new mesh.
+      name: maal-mesh-intermediate
+      kind: Issuer
+      group: cert-manager.io
+
+  tls:
+    trustDomain: cluster.local
+    # Must match the Service DNS name, which follows the namespace above.
+    # The chart default names cert-manager.svc and would fail the handshake.
+    certificateDNSNames:
+      - cert-manager-istio-csr.istio-system.svc
+
+    # The root istio-csr publishes as the mesh trust bundle. Without this it
+    # infers a root from its own serving chain, which drifts the moment the
+    # intermediate is re-issued. Mounted from the volume at the bottom.
+    rootCAFile: /var/run/secrets/istio-csr/ca.crt
+
+  server:
+    # AMBIENT. ztunnel holds one identity but requests certificates on behalf
+    # of every pod on its node, so without this it is refused and no ambient
+    # workload gets a certificate at all. istio-csr verifies the pod is really
+    # on ztunnel's node before issuing — node authentication, added for exactly
+    # this. Sidecar meshes leave it empty.
+    caTrustedNodeAccounts: istio-system/ztunnel
+
+  istio:
+    revisions: ["default"]
+    namespace: istio-system
+
+  controller:
+    # Same trap cert-manager hit — see the leaderElection note in
+    # ./cert-manager.yaml. kube-system is not a destination in the platform
+    # AppProject, and a lease created there fails the sync. The chart already
+    # defaults to istio-system; pinned so a chart bump cannot move it.
+    leaderElectionNamespace: istio-system
+
+# The mesh root, mounted read-only for rootCAFile above. cert-manager writes
+# this Secret when it issues maal-mesh-root (wave 1); istio-csr is wave 2, so
+# it exists by the time this pod is scheduled. If it does not, the pod stays
+# Pending rather than starting with a wrong trust bundle — fail closed.
+volumes:
+  - name: mesh-root-ca
+    secret:
+      secretName: maal-mesh-root
+      items:
+        - key: ca.crt
+          path: ca.crt
+
+volumeMounts:
+  - name: mesh-root-ca
+    mountPath: /var/run/secrets/istio-csr
+    readOnly: true
+
+resources:
+  requests:
+    cpu: 20m
+    memory: 64Mi

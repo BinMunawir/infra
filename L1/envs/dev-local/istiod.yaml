@@ -11,8 +11,28 @@ pilot:
       cpu: 100m
       memory: 256Mi
   autoscaleEnabled: false
+  env:
+    # Off. See the mesh CA note below — this is half of that change, and it
+    # lives here because a second `pilot:` block further down would silently
+    # replace this one rather than merge with it.
+    ENABLE_CA_SERVER: "false"
 
-# istiod self-signs the mesh CA by default. cert-manager is installed (wave 0)
-# but is NOT yet wired to issue `cacerts` — that is a deliberate later step,
-# noted in ../../Readme.md. Until then mesh mTLS chains to a self-signed root
-# that is regenerated whenever istiod restarts.
+# ─── the mesh CA ───────────────────────────────────────────────────────────
+# istiod no longer signs anything. Its CA server is off and every workload
+# certificate comes from istio-csr, which signs through cert-manager from the
+# chain in ../../platform/mesh-ca/manifests.yaml.
+#
+# What this fixes: istiod's default is to self-sign a root, hold it in the
+# `istio-ca-secret` Secret, and REGENERATE IT if that Secret goes missing. Every
+# workload certificate then chains to a root nothing else trusts, and mesh mTLS
+# stays broken until every pod has rotated. There is no operator action that
+# brings the old root back. The root of trust now has a lifecycle, an owner, and
+# a rotation path instead.
+#
+# Both values are load-bearing and must move together:
+#   - ENABLE_CA_SERVER=false  stops istiod signing
+#   - global.caAddress        tells workloads where to ask instead
+# Setting only the second leaves istiod signing happily and nothing points at
+# it; setting only the first leaves the mesh with no CA at all.
+global:
+  caAddress: cert-manager-istio-csr.istio-system.svc:443

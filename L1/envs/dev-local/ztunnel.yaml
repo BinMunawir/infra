@@ -8,3 +8,13 @@ resources:
   requests:
     cpu: 50m
     memory: 128Mi
+
+# Ambient's CA client. ztunnel terminates mTLS for every pod on its node, so it
+# fetches a certificate per workload identity — and it must ask istio-csr, not
+# istiod, now that istiod's CA server is off (see ./istiod.yaml).
+#
+# This is the value that is easy to forget: istiod would still start, ztunnel
+# would still run, and the mesh would simply never get certificates. It pairs
+# with app.server.caTrustedNodeAccounts in ./istio-csr.yaml, which is what
+# permits ztunnel to request identities other than its own.
+caAddress: cert-manager-istio-csr.istio-system.svc:443
