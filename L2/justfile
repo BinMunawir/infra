@@ -47,8 +47,10 @@ image repo tag:
     dir="{{src}}/{{repo}}"
     test -d "$dir" || { echo "!! no such service repo: $dir" >&2; exit 1; }
     if [ ! -f "$dir/Dockerfile" ]; then
-        echo "!! {{repo}} has no Dockerfile — only 'ledger' ships one today." >&2
-        echo "   Copy ledger/Dockerfile and change the ./cmd/<entrypoint> targets." >&2
+        echo "!! {{repo}} has no Dockerfile." >&2
+        echo "   Copy ledger/Dockerfile and change the ./cmd/<entrypoint> target." >&2
+        echo "   The image must put binaries at /app/<name> with WORKDIR /app and" >&2
+        echo "   USER 1001 — charts/go-service assumes exactly that layout." >&2
         exit 1
     fi
     docker build -t "{{tag}}:dev" "$dir"

@@ -3,14 +3,18 @@
 # The workflow spine. Every capability in every Maal service is a Temporal
 # workflow (blueprint.md §1), so nothing else works until this does.
 #
-# The upstream chart bundles Cassandra, Elasticsearch, Prometheus and Grafana by
-# default — a stack far larger than the thing you actually want. All of it is
-# switched off here.
+# The upstream chart used to bundle Cassandra, Elasticsearch, Prometheus and
+# Grafana as subcharts. As of chart v1.0.0-rc.2 they are gone: there is nothing
+# left to switch off, and the top-level `cassandra:` / `mysql:` / `postgresql:` /
+# `elasticsearch:` / `prometheus:` / `grafana:` keys are now hard `fail`s in
+# templates/_deprecations.tpl rather than ignored no-ops. Same for the old
+# `schema.{createDatabase,setup,update}` block — see the note further down.
 #
 # ─── the database is EXTERNAL ──────────────────────────────────────────────
-# The cluster runs no Postgres. `host` below points at one you manage yourself;
-# `host.docker.internal` is how a kind node reaches a container on your laptop,
-# which is the dev default. Point it at RDS/Cloud SQL and nothing else changes.
+# The cluster runs no Postgres. `connectAddr` below points at one you manage
+# yourself; `host.docker.internal` is how a kind node reaches a container on
+# your laptop, which is the dev default. Point it at RDS/Cloud SQL and nothing
+# else changes.
 #
 # YOU MUST CREATE BOTH DATABASES FIRST. Temporal needs `temporal` and
 # `temporal_visibility`, owned by the user below:
@@ -27,59 +31,57 @@ server:
 
   config:
     persistence:
-      default:
-        driver: sql
-        sql:
-          driver: postgres12
-          host: host.docker.internal
-          port: 5432
-          database: temporal
-          user: temporal
-          existingSecret: temporal-db     # chart reads the `password` key
-      visibility:
-        driver: sql
-        sql:
-          driver: postgres12
-          host: host.docker.internal
-          port: 5432
-          database: temporal_visibility
-          user: temporal
-          existingSecret: temporal-db
+      # Which datastore below serves which role. Both are chart defaults; they
+      # are written out because the names are referenced by nothing else and a
+      # silent rename would be a very confusing outage.
+      defaultStore: default
+      visibilityStore: visibility
 
-# Off: the database is external and managed outside Kubernetes. These subcharts
-# would each stand up a second, unmanaged one inside the cluster.
-cassandra:
-  enabled: false
-mysql:
-  enabled: false
-postgresql:
-  enabled: false
-elasticsearch:
-  enabled: false
+      # PINNED ON PURPOSE. numHistoryShards cannot be changed after the initial
+      # deployment — Temporal rehashes nothing, so a different value on an
+      # existing cluster means histories that can no longer be found. Leaving it
+      # to the chart default would hand that decision to whoever next bumps the
+      # chart version.
+      numHistoryShards: 512
 
-# Off: L1 has no observability stack, and these would install a second
-# Prometheus with nothing scraping it.
-prometheus:
-  enabled: false
-grafana:
-  enabled: false
+      # The post-v1.0.0-rc.2 shape: a map of named datastores that follows the
+      # raw Temporal server config format. `existingSecret` and `secretKey` are
+      # the only Helm-specific keys here and are stripped before rendering.
+      datastores:
+        default:
+          sql:
+            pluginName: postgres12
+            databaseName: temporal
+            connectAddr: "host.docker.internal:5432"
+            connectProtocol: tcp
+            user: temporal
+            existingSecret: temporal-db   # chart reads the `password` key
+            secretKey: password
+            # OFF, deliberately. This issues `CREATE DATABASE`, and the external
+            # database's owner role is not a superuser — so it would fail with
+            # "permission denied to create database" on every sync. Creating the
+            # two databases is a one-time act on the database server, above.
+            createDatabase: false
+            # ON. `setup-schema` then `update-schema`, both of which run inside a
+            # database that already exists and need only the owner role — which
+            # is exactly what the credential above grants. This one key replaces
+            # the old `schema.setup` + `schema.update` pair.
+            manageSchema: true
+
+        visibility:
+          sql:
+            pluginName: postgres12
+            databaseName: temporal_visibility
+            connectAddr: "host.docker.internal:5432"
+            connectProtocol: tcp
+            user: temporal
+            existingSecret: temporal-db
+            secretKey: password
+            createDatabase: false
+            manageSchema: true
 
 # Reachable at https://temporal.maal.local:8080 through the edge Gateway —
 # see ../../edge/dev-local/routes.yaml.
 web:
   enabled: true
   replicaCount: 1
-
-schema:
-  # OFF, deliberately. The chart's createDatabase job issues `CREATE DATABASE`,
-  # and the external database's owner role is not a superuser — so the job would
-  # fail with "permission denied to create database" on every sync. Creating the
-  # two databases is a one-time act on the database server, above.
-  createDatabase:
-    enabled: false
-  # ON. These run inside databases that already exist and only need the owner
-  # role, which is exactly what the credential above grants.
-  setup:
-    enabled: true
-  update:
-    enabled: true

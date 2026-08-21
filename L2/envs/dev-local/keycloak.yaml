@@ -15,6 +15,20 @@
 
 replicas: 1
 
+# SERVE AT THE ROOT, not /auth.
+#
+# The chart still defaults relativePath to "/auth" for backwards compatibility
+# with Keycloak 16 and earlier. Keycloak 26 — which is what this chart's image
+# is — serves at the root, and every other reference in this repo assumes that:
+# ../../edge/dev-local/routes.yaml forwards the path unmodified, maal-business's
+# Keycloak.BaseURL carries no prefix, and `just hosts` prints a /realms/master
+# URL. Leaving the default would 404 all three while the pod reported healthy.
+#
+# It also moves the health endpoints the probes below use: they are derived from
+# this value, so /health/ready rather than /auth/health/ready.
+http:
+  relativePath: "/"
+
 # `start --optimized` skips the build step, which requires the image to have
 # been built with the same feature flags. Locally we want the plain `start`
 # so the DB vendor is resolved at boot.

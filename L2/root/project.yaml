@@ -53,12 +53,25 @@ spec:
 
   # THE BOUNDARY. L2 may not create cluster-scoped resources — no CRDs, no
   # ClusterRoles, no webhooks. That is why the Gateway API CRDs went into L1:
-  # keeping this list empty is what stops an L2 mistake from reaching the mesh
+  # keeping this list short is what stops an L2 mistake from reaching the mesh
   # or the operators.
   #
-  # The one exception is ClusterSecretStore, which is cluster-scoped by design
-  # and is the single object L2 legitimately owns above namespace level.
+  # Two exceptions, and only two:
+  #
+  #   Namespace          every appset here sets CreateNamespace=true, and Argo
+  #                      creates that namespace AS the project. Without this
+  #                      entry every sync fails with "resource :Namespace is
+  #                      not permitted in project maal" — and it fails on the
+  #                      namespace, so nothing inside it is ever attempted.
+  #                      The `destinations` list above is what actually bounds
+  #                      which namespaces L2 may touch; this only grants the
+  #                      kind. The empty `group` is core/v1, not a wildcard.
+  #
+  #   ClusterSecretStore cluster-scoped by design, and the single object L2
+  #                      legitimately owns above namespace level.
   clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
     - group: external-secrets.io
       kind: ClusterSecretStore
 
