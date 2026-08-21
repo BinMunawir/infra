@@ -8,6 +8,19 @@ crds:
   enabled: true
   keep: true
 
+# cert-manager defaults its leader-election Role/RoleBinding to kube-system,
+# which the `platform` AppProject deliberately does not list as a destination —
+# see ../../root/project.yaml. Sync fails with:
+#   "namespace kube-system is not permitted in project 'platform'"
+#
+# Fixed here rather than by adding kube-system to the project: that project
+# carries `clusterResourceWhitelist: '*'`, so listing kube-system as a
+# destination would let all of L1 write into it, to legalise four
+# leader-election objects. Keep the boundary; move the objects.
+global:
+  leaderElection:
+    namespace: cert-manager
+
 resources:
   requests:
     cpu: 20m

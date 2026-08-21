@@ -64,10 +64,192 @@ drift:
     fi
     echo ">> all Applications Synced + Healthy"
 
+# `drift` asks only "is every Application Synced+Healthy". That is necessary,
+# not sufficient, and it FAILS OPEN: an ApplicationSet whose generator errored
+# produces zero Applications, and zero Applications are all trivially
+# Synced+Healthy. `drift` reports success on an empty cluster.
+#
+# So this checks, in dependency order:
+#
+#   1. the L0 contract still holds       L1 is written against exactly it
+#   2. Argo's own workloads are ready    nothing below means anything otherwise
+#   3. the generators produced params    where a template error hides
+#   4. the expected component matrix     the fail-open case above
+#   5. every Application Synced+Healthy  what `drift` covers
+#   6. the CRDs L2 will demand           so a missing capability surfaces here,
+#                                        not as "no matches for kind" one layer
+#                                        up — same four L2/bootstrap checks
+#
+# Does L1 deliver what it promises? Exits non-zero if not — usable in CI.
+verify:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    export KUBECONFIG="$(just _kubeconfig)"
+    fail=0
+    ok(){  printf '  ok    %s\n' "$*"; }
+    no(){  printf '  FAIL  %s\n' "$*"; fail=1; }
+
+    echo "── 1. L0 contract ────────────────────────────────"
+    sc="$(jq -r .storageClass {{contract}} 2>/dev/null || echo '')"
+    kubectl get nodes >/dev/null 2>&1 && ok "cluster reachable" || no "cluster unreachable"
+    if [ -n "$sc" ]; then
+        kubectl get storageclass "$sc" >/dev/null 2>&1 \
+            && ok "storageClass $sc" || no "storageClass $sc in contract but not in cluster"
+    else
+        no "no contract published — cd ../L0 && just {{l0_env}}-up"
+    fi
+
+    echo "── 2. Argo CD ────────────────────────────────────"
+    for d in argocd-server argocd-repo-server argocd-applicationset-controller; do
+        r="$(kubectl -n {{argocd_ns}} get deploy "$d" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)"
+        [ "${r:-0}" -ge 1 ] 2>/dev/null && ok "$d" || no "$d not ready"
+    done
+    r="$(kubectl -n {{argocd_ns}} get statefulset argocd-application-controller -o jsonpath='{.status.readyReplicas}' 2>/dev/null)"
+    [ "${r:-0}" -ge 1 ] 2>/dev/null && ok "argocd-application-controller" || no "argocd-application-controller not ready"
+
+    echo "── 3. generators ─────────────────────────────────"
+    sets="$(kubectl -n {{argocd_ns}} get applicationsets -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null)"
+    if [ -z "$sets" ]; then
+        no "no ApplicationSets — is the root app applied?"
+    else
+        for s in $sets; do
+            err="$(kubectl -n {{argocd_ns}} get applicationset "$s" -o jsonpath='{.status.conditions[?(@.type=="ErrorOccurred")].status}' 2>/dev/null)"
+            if [ "$err" = "True" ]; then
+                msg="$(kubectl -n {{argocd_ns}} get applicationset "$s" -o jsonpath='{.status.conditions[?(@.type=="ErrorOccurred")].message}' 2>/dev/null)"
+                no "appset $s: $msg"
+            else
+                ok "appset $s generating"
+            fi
+        done
+    fi
+
+    echo "── 4. expected components ────────────────────────"
+    # The catalog is the source of truth: every `- component:` in either appset
+    # must have produced an Application named <env>-<component>.
+    comps="$(grep -hoE '^[[:space:]]+- component: [^[:space:]]+' \
+        {{justfile_directory()}}/platform/appset.yaml \
+        {{justfile_directory()}}/platform/appset-vendored.yaml | awk '{print $3}' | sort -u)"
+    for c in $comps; do
+        if kubectl -n {{argocd_ns}} get application "{{l1_env}}-$c" >/dev/null 2>&1; then
+            ok "application {{l1_env}}-$c"
+        else
+            no "application {{l1_env}}-$c MISSING — the generator never produced it"
+        fi
+    done
+
+    echo "── 5. convergence ────────────────────────────────"
+    rows="$(kubectl -n {{argocd_ns}} get applications \
+        -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.sync.status}{"\t"}{.status.health.status}{"\n"}{end}' 2>/dev/null)"
+    if [ -z "$rows" ]; then
+        no "no Applications exist at all"
+    else
+        while IFS=$'\t' read -r n s h; do
+            [ -z "$n" ] && continue
+            if [ "$s" = "Synced" ] && [ "$h" = "Healthy" ]; then ok "$n"
+            else no "$n  ${s:-?}/${h:-?}  — just why $n"; fi
+        done <<<"$rows"
+    fi
+
+    echo "── 6. capabilities L2 depends on ─────────────────"
+    # Deliberately the same four L2/bootstrap/up.sh checks — a capability that
+    # is missing should fail here, not one layer up as "no matches for kind".
+    crd(){ kubectl get crd "$1" >/dev/null 2>&1 && ok "$2" || no "$2 — CRD $1 absent"; }
+    crd externalsecrets.external-secrets.io     "External Secrets (ExternalSecret)"
+    crd authorizationpolicies.security.istio.io "Istio (AuthorizationPolicy)"
+    crd gateways.gateway.networking.k8s.io      "Gateway API (Gateway)"
+    crd certificates.cert-manager.io            "cert-manager (Certificate)"
+
+    echo
+    if [ "$fail" -eq 0 ]; then
+        echo ">> L1 verified — the platform is up and L2 can bootstrap on it"
+    else
+        echo "!! L1 is NOT ready. Fix the FAIL lines above, then re-run."
+        exit 1
+    fi
+
+# Argo buries a failure at four different depths, and the top two are routinely
+# empty — a sync rejected by the AppProject shows up as a bare
+# "OutOfSync / Missing" with no condition set. This walks all four:
+#
+#   1. .status.sync / .status.health          the summary `just apps` prints
+#   2. the parent ApplicationSet's            an app waiting on an earlier
+#      RollingSync step                       wave looks IDENTICAL to a failure
+#   3. .status.operationState                 phase + the retry counter
+#   4. …syncResult.resources[].message        where the real error actually is
+#
+# (2) is what stops a false alarm: under RollingSync every app in a later wave
+# sits at OutOfSync/Missing by design.
+#
 # Why is an app unhealthy? `just why dev-local-istiod`
 why app:
-    @KUBECONFIG=$(just _kubeconfig) kubectl -n {{argocd_ns}} get application {{app}} \
-        -o jsonpath='{range .status.conditions[*]}{.type}: {.message}{"\n"}{end}{"\n"}SYNC:   {.status.sync.status}{"\n"}HEALTH: {.status.health.status}{"\n"}'
+    #!/usr/bin/env bash
+    set -uo pipefail
+    export KUBECONFIG="$(just _kubeconfig)"
+
+    json="$(kubectl -n {{argocd_ns}} get application {{app}} -o json 2>/dev/null)" || {
+        echo "!! no Application '{{app}}' in {{argocd_ns}} — 'just apps' lists them" >&2; exit 1; }
+
+    # Multi-source apps — every one the appset generates — report a revision per
+    # source in .revisions (chart version, then the sha of this repo). Their
+    # scalar .revision is empty, so reading only that printed a bare "-".
+    jq -r '
+        "── \(.metadata.name) " + ("─" * 30),
+        "SYNC:     \(.status.sync.status // "-")",
+        "HEALTH:   \(.status.health.status // "-")"
+            + (if (.status.health.message // "") != "" then "  — \(.status.health.message)" else "" end),
+        "REVISION: " + (
+            if (.status.sync.revision // "") != "" then .status.sync.revision[0:7]
+            elif ((.status.sync.revisions // []) | length) > 0 then
+                (.status.sync.revisions
+                 | map(if test("^[0-9a-f]{40}$") then .[0:7] else . end)
+                 | join("  +  "))
+            else "-" end)
+    ' <<<"$json"
+
+    owner="$(jq -r '[.metadata.ownerReferences[]? | select(.kind=="ApplicationSet") | .name][0] // ""' <<<"$json")"
+    if [ -n "$owner" ]; then
+        kubectl -n {{argocd_ns}} get applicationset "$owner" -o json 2>/dev/null \
+          | jq -r --arg app '{{app}}' --arg set "$owner" '
+            ((.status.applicationStatus // [])[] | select(.application == $app)) // empty
+            | "", "ROLLING SYNC  (applicationset \($set))",
+              "  step \(.step)  ·  \(.status)",
+              "  \(.message)",
+              (if .status == "Waiting" then
+                 "  NOTE: blocked behind an earlier wave — this is not a failure."
+               else empty end)'
+    fi
+
+    jq -r '
+        (.status.operationState // empty)
+        | "", "OPERATION",
+          "  \(.phase)\(if (.message // "") != "" then " — " + .message else "" end)",
+          "  started \(.startedAt // "-")\(if .finishedAt then "   finished \(.finishedAt)" else "" end)"
+    ' <<<"$json"
+
+    jq -r '
+        [ (.status.operationState.syncResult.resources // [])[]
+          | select(.status != "Synced" and .status != "Running") ] as $bad
+        | if ($bad | length) > 0
+          then "", "FAILED RESOURCES", ($bad[] | "  \(.status)  \(.kind)/\(.name)\n      \(.message)")
+          else empty end
+    ' <<<"$json"
+
+    jq -r '
+        [ (.status.resources // [])[]
+          | select((.health.status // "") | (. != "" and . != "Healthy")) ] as $bad
+        | if ($bad | length) > 0
+          then "", "UNHEALTHY RESOURCES",
+               ($bad[] | "  \(.health.status)  \(.kind)/\(.name)"
+                       + (if .health.message then "\n      \(.health.message)" else "" end))
+          else empty end
+    ' <<<"$json"
+
+    jq -r '
+        (.status.conditions // []) as $c
+        | if ($c | length) > 0
+          then "", "CONDITIONS", ($c[] | "  [\(.type)] \(.message)")
+          else empty end
+    ' <<<"$json"
 
 # Tail the applicationset controller — where generator errors surface
 logs-appset:
