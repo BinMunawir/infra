@@ -16,8 +16,26 @@ spec:
   goTemplate: true
   goTemplateOptions: ["missingkey=error"]
 
-  # Don't delete a live Application because a generator hiccuped (a transient
-  # git failure would otherwise look like "this env no longer exists").
+  # WHAT THIS ACTUALLY DOES, which is not what the comment here used to claim.
+  #
+  # `preservedFields` is a list of annotation/label KEYS that the appset
+  # controller will not overwrite on an Application it generated — see the
+  # ApplicationSet CRD in ../bootstrap/argocd/install.yaml, where it is two
+  # string arrays and nothing more. It does NOT stop a hiccuping generator from
+  # deleting a live Application; the field for that is
+  # `syncPolicy.applicationsSync`, whose `create-update` value creates and
+  # updates generated Applications but never deletes them.
+  #
+  # So this line is not deletion-safety, and it is not doing much good either:
+  # the sync-wave annotation is rendered from `{{.wave}}` by the template
+  # below, so preserving it means a wave hand-edited on a live Application
+  # STOPS reconciling from Git. That is drift, and this repo works hard
+  # everywhere else to prevent exactly it.
+  #
+  # Left in place rather than removed because deleting it changes how a running
+  # cluster reconciles, which is a decision to make deliberately and not as a
+  # side effect of correcting a comment. It is deliberately NOT copied to the
+  # other seven appsets.
   preservedFields:
     annotations: ["argocd.argoproj.io/sync-wave"]
 
@@ -39,8 +57,14 @@ spec:
                   exclude: true
 
           # ── dimension 2: the component catalog ─────────────────────────
-          # `wave` orders components within an env — see the ordering note in
-          # ../Readme.md for what that does and does not guarantee.
+          # `wave` orders components within an env. It does that through TWO
+          # mechanisms with different strengths, and the difference matters:
+          # the `platform.maal/wave` LABEL feeds the RollingSync steps at the
+          # bottom of this file, which genuinely gate each step on the previous
+          # one going Healthy; the sync-wave ANNOTATION only orders resources
+          # within a single Application. The appsets that carry no RollingSync
+          # strategy (edge, secret-store, vendored) therefore get ordering on a
+          # best-effort basis and rely on retry/backoff to converge.
           - list:
               elements:
                 - component: cert-manager
@@ -100,7 +124,9 @@ spec:
                 # therefore runs no stateful database workload, holds no
                 # database PVC, and cannot lose data it never stored. L2 carries
                 # only host/port/name in Git and pulls credentials through
-                # External Secrets — see L2/Readme.md.
+                # External Secrets — see the `database` block in
+                # L2/charts/go-service/values.yaml, and L2/db/<env>/bootstrap.sql
+                # for what has to exist on the server before any of it works.
                 #
                 # Reintroducing an in-cluster operator (CloudNativePG or
                 # otherwise) is a deliberate architecture change, not a catalog
@@ -130,8 +156,8 @@ spec:
   # the manifests Argo self-manages, it survives self-heal; the imperative
   # `kubectl patch` this replaced did not.
   #
-  # Verify with `just progressive`. If it ever reads OFF, this block is ignored
-  # and ordering falls back to retry/back-off — which converges, noisily.
+  # `just verify l1` section 2 checks it. If it ever reads OFF, this block is
+  # ignored and ordering falls back to retry/back-off — which converges, noisily.
   # Five steps now, because the mesh CA sits in the middle of the mesh's own
   # dependency chain: cert-manager (0) → mesh-ca (1, in the vendored appset) →
   # istio-csr (2) → istiod (3) → ztunnel (4). Each step waits for the previous

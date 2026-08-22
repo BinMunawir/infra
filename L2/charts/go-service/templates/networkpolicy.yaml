@@ -1,0 +1,97 @@
+{{/*
+Default-deny ingress AND egress, plus an explicit allow-list.
+
+─── why this exists alongside the AuthorizationPolicy ───────────────────────
+They answer different questions and neither substitutes for the other.
+
+  AuthorizationPolicy   "which mesh IDENTITY may call this workload"
+                        Enforced by ztunnel, in the mesh, on mTLS principals.
+                        Says nothing about traffic leaving the pod.
+
+  NetworkPolicy         "which IP:port may this pod reach, and be reached from"
+                        Enforced by the CNI, below the mesh, on addresses.
+                        The only control that covers EGRESS.
+
+Egress is the half that matters most here, because every database this platform
+uses is EXTERNAL. A service that can open arbitrary outbound connections to
+anything its node can route to is one bug away from reaching a database that is
+not its own — and the AuthorizationPolicy, which only sees inbound mesh
+traffic, cannot see that happen at all.
+
+─── OFF BY DEFAULT, and why that is not laziness ────────────────────────────
+kindnet — the CNI L0 provisions locally — implements no NetworkPolicy at all.
+It does not reject the object; it accepts it and enforces nothing. So on
+dev-local this is inert whether it is on or off, and a policy that has never
+once been enforced is a policy nobody has tested.
+
+Shipping it enabled-by-default would therefore mean the FIRST place it takes
+effect is the first cloud environment, where a missing egress rule is a service
+that cannot reach its database and a stack trace that says "connection timed
+out". Same reasoning as migrations.enabled and autoscaling.enabled elsewhere in
+this chart: declared, documented, and switched on deliberately by the
+environment that can actually honour it.
+
+What it buys by existing now: the rules are written down next to the service
+they describe, so enabling them in a cloud env is a values change rather than a
+research project.
+*/}}
+{{- if .Values.networkPolicy.enabled }}
+{{- $root := . -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "go-service.name" . }}
+  labels:
+    {{- include "go-service.labels" . | nindent 4 }}
+spec:
+  # Every pod of this service, both directions. Listing both policyTypes with
+  # empty rule lists is the documented default-deny idiom — omitting Egress
+  # here would leave outbound traffic unrestricted, which is the exact gap
+  # this object exists to close.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "go-service.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+    - Egress
+
+  {{- with .Values.networkPolicy.ingress }}
+  ingress:
+    {{- toYaml . | nindent 4 }}
+  {{- else }}
+  # An explicit empty list, not an omitted key. Both mean deny-all-inbound to
+  # the API server, but `ingress: null` in the rendered output reads like
+  # something failed to render. This is the same deny-everything intent the
+  # AuthorizationPolicy states for a Temporal worker, one layer down.
+  ingress: []
+  {{- end }}
+
+  egress:
+    {{- if .Values.networkPolicy.allowDNS }}
+    # DNS FIRST, ALWAYS. A default-deny egress policy without this breaks every
+    # outbound connection the pod makes, including the ones explicitly allowed
+    # below — they are all written as hostnames, and the resolution fails before
+    # the connection is attempted. The symptom is a timeout against a rule that
+    # looks correct, which is the single most common way a first NetworkPolicy
+    # goes wrong.
+    #
+    # Both protocols: DNS is UDP until a response exceeds 512 bytes, then the
+    # resolver retries the same query over TCP.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- end }}
+    {{- with .Values.networkPolicy.egress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

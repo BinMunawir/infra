@@ -21,7 +21,7 @@ terraform {
   # file at init time.
   #
   #   cp backend.hcl.example backend.hcl     # then edit
-  #   tofu init -backend-config=backend.hcl  # `just aws-up` does this for you
+  #   tofu init -backend-config=backend.hcl  # `just cloud up aws` does this for you
   #
   # Declared rather than commented out on purpose. A commented backend means
   # `tofu init` silently succeeds against local state and the mistake is only

@@ -87,7 +87,7 @@ spec:
             valueFiles:
               # Chart defaults, then the service's values for this env. A
               # service with no file gets chart defaults, which will not be a
-              # working deployment — `just check-envs` lists the gaps.
+              # working deployment — `just check envs` lists the gaps.
               - $values/L2/envs/{{.stage}}-{{.provider}}/{{.service}}.yaml
 
         - repoURL: git@github.com:BinMunawir/infra.git
@@ -126,6 +126,28 @@ spec:
           labels:
             istio.io/dataplane-mode: ambient
             maal/service: '{{.service}}'
+
+            # POD SECURITY ADMISSION — `restricted`, enforced.
+            #
+            # charts/go-service already renders every workload to this profile:
+            # runAsNonRoot with an explicit uid, allowPrivilegeEscalation
+            # false, readOnlyRootFilesystem, all capabilities dropped, and the
+            # RuntimeDefault seccomp profile. Until now that was a CONVENTION —
+            # a values file could override podSecurityContext and nothing would
+            # object. These three labels make it an invariant the API server
+            # enforces at admission, so the override is rejected instead of
+            # deployed.
+            #
+            # Safe to enforce here precisely because the chart already complies:
+            # this codifies what the workloads do today rather than asking them
+            # to change. The third-party deps are a different story — see the
+            # `baseline` note in ./deps-appset.yaml.
+            #
+            # audit + warn alongside enforce so a rejected pod says WHY in the
+            # Application's sync message rather than just failing to appear.
+            pod-security.kubernetes.io/enforce: restricted
+            pod-security.kubernetes.io/audit: restricted
+            pod-security.kubernetes.io/warn: restricted
         retry:
           limit: 10
           backoff:

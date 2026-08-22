@@ -62,7 +62,10 @@ variable "node_machine_type" {
 variable "enable_network_policy" {
   description = <<-EOT
     Enable Dataplane V2 (Cilium-backed), which genuinely enforces NetworkPolicy
-    — unlike kindnet locally. See the asymmetry list in ../contract.md.
+    — unlike kindnet locally, which accepts the objects and enforces nothing.
+    That asymmetry is why L2/charts/go-service ships `networkPolicy.enabled:
+    false` by default: the rules are written down there, and an env with this
+    set to true is the kind that can turn them on.
   EOT
   type        = bool
   default     = true

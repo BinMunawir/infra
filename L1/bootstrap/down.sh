@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # L1/bootstrap/down.sh — tear down L1, leaving the L0 cluster intact.
 #
-# For a clean slate you almost always want `cd ../L0 && just local-down`
-# instead: deleting the cluster is faster and leaves nothing behind. This script
-# is for the rarer case of rebuilding the platform on a cluster you want to keep.
+# For a clean slate you almost always want `just down` instead: deleting the
+# cluster is faster and leaves nothing behind. This script is for the rarer case
+# of rebuilding the platform on a cluster you want to keep — `just down l1`.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,4 +35,4 @@ kubectl delete namespace "${ARGOCD_NS}" --ignore-not-found || true
 
 echo ">> L1 removed. Operator CRDs may linger — prune is disabled by design, so"
 echo "   nothing auto-deleted the Istio/cert-manager/ESO CRDs or what depends on them."
-echo ">> Clean slate: cd ${L0} && just ${L0_ENV}-down && just ${L0_ENV}-up"
+echo ">> Clean slate: just down && just up"

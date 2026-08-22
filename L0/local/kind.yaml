@@ -2,8 +2,10 @@
 #
 # The extraPortMapping below IS the `lbEndpoint` contract output: host
 # 127.0.0.1:8080 lands on NodePort 30080 inside the cluster, which is where L2's
-# edge gateway will bind. Changing either number changes the contract, so change
-# ../contract.md and L0/local/up.sh in the same commit.
+# edge gateway will bind. Changing either number changes the contract, so
+# LB_ENDPOINT in L0/local/up.sh, the `contract.lbEndpoint` mirrors in
+# L1/envs/*.yaml and L2/envs/*.yaml, and the port `just edge-port` pins all have
+# to change in the same commit. `just verify` checks that they still agree.
 apiVersion: kind.x-k8s.io/v1alpha4
 kind: Cluster
 name: maal-local

@@ -20,7 +20,7 @@ terraform {
   # the block is declared rather than commented out.
   #
   #   cp backend.hcl.example backend.hcl     # then edit
-  #   tofu init -backend-config=backend.hcl  # `just gcp-up` does this for you
+  #   tofu init -backend-config=backend.hcl  # `just cloud up gcp` does this for you
   #
   # GCS has server-side locking built in, so there is no lock table to create.
   backend "gcs" {}

@@ -57,7 +57,7 @@ kubectl get crd authorizationpolicies.security.istio.io  >/dev/null 2>&1 || miss
 kubectl get crd httproutes.gateway.networking.k8s.io     >/dev/null 2>&1 || missing+=("Gateway API (HTTPRoute)")
 if (( ${#missing[@]} )); then
   die "L1 is not converged — missing CRDs: ${missing[*]}
-    check: cd ${L2}/../L1 && just apps"
+    check: just status"
 fi
 kubectl -n "${ARGOCD_NS}" get appproject platform >/dev/null 2>&1 \
   || die "the L1 'platform' AppProject is missing — run L1's bootstrap first"
@@ -70,10 +70,10 @@ kubectl -n "${ARGOCD_NS}" get appproject platform >/dev/null 2>&1 \
 # HTTPRoute with no Gateway reports Accepted=False and nothing else.
 kubectl get clustersecretstore maal-secret-store >/dev/null 2>&1 \
   || die "the L1 ClusterSecretStore 'maal-secret-store' is missing — every ExternalSecret here would sit Pending
-    check: cd ${L2}/../L1 && just verify"
+    check: just verify l1"
 kubectl -n maal-edge get gateway maal-edge >/dev/null 2>&1 \
   || die "the L1 Gateway 'maal-edge' is missing — every HTTPRoute here would have no parent to attach to
-    check: cd ${L2}/../L1 && just verify"
+    check: just verify l1"
 
 log "L1 capabilities and edge present"
 
@@ -82,16 +82,15 @@ kubectl apply -f "${L2}/root/project.yaml"
 kubectl apply -f "${L2}/root/root-app.yaml"
 
 log "L2 bootstrapped. Argo reconciles the product layer from Git."
-log "watch:  just apps"
+log "watch:  just status"
 log ""
-log "NOTE: every database here is EXTERNAL — this cluster creates none. The"
-log "      hosts and the CREATE DATABASE / CREATE ROLE lines each app expects"
-log "      are at the top of envs/${L2_ENV}/*.yaml. A missing database shows up"
-log "      as a schema job retrying forever, not as an error anyone reads."
+log "NOTE: every database here is EXTERNAL — this cluster creates none, and a"
+log "      missing one shows up as a schema job retrying forever behind a green"
+log "      Application, not as an error anyone reads. Create them:"
+log "      just db-init"
 log ""
 log "NOTE: images are not in the cluster yet. Build and load them first:"
 log "      just images"
 log ""
 log "NOTE: the edge Gateway is L1's. If a route is reachable in the cluster but"
-log "      not from this laptop, its NodePort needs pinning — that lives one"
-log "      layer down now:  cd ../L1 && just edge-port"
+log "      not from this laptop, its NodePort needs pinning:  just edge-port"

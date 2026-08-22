@@ -1,0 +1,145 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+
+  "_comment_why": [
+    "Every version in this repo is hand-pinned with a comment saying how to bump it:",
+    "Argo v3.3.14, cert-manager v1.21.1, istio 1.30.3 in four places, istio-csr v0.17.0,",
+    "external-secrets 2.9.0, gateway-api v1.6.1, temporal 1.6.0, keycloakx 7.2.3, plus the",
+    "tool pins in the CI workflow. Pinning is right — an unpinned platform chart means the",
+    "cluster changes when nobody committed anything. But nothing was telling anyone when a",
+    "pin went stale or picked up a CVE, so 'bump it' was a thing that happened when someone",
+    "remembered. This turns each pin into a PR that CI renders against our own values files.",
+    "",
+    "Grouping is by blast radius, not by ecosystem: the four Istio charts move as one",
+    "release train and MUST NOT be split across PRs, while cert-manager and Argo are each",
+    "their own decision with their own upgrade note to read."
+  ],
+
+  "extends": [
+    "config:recommended",
+    ":semanticCommitsDisabled"
+  ],
+
+  "_comment_commits": [
+    "semanticCommits is off because this repo's commit messages are the single word",
+    "'fixes'. A bot writing 'chore(deps): ...' would be the only thing in the log that",
+    "does not look like the rest of it."
+  ],
+  "commitMessageTopic": "{{depName}}",
+  "commitMessageExtra": "to {{newValue}}",
+
+  "timezone": "Asia/Riyadh",
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 5,
+  "labels": ["dependencies"],
+
+  "_comment_argocd": [
+    "The ApplicationSet catalogs are the interesting target and Renovate does not parse",
+    "them natively: the chart name, its repository and its version are three sibling keys",
+    "on a list element, not a Chart.yaml dependency. The custom managers below teach it",
+    "that shape. Each regex is anchored on `chart:` + `repoURL:` + `version:` in that",
+    "order, which is exactly how every catalog entry is written."
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "L1 platform catalog and L2 deps catalog — Helm charts in ApplicationSet list generators",
+      "managerFilePatterns": [
+        "/^L1/platform/appset\\.yaml$/",
+        "/^L2/apps/deps-appset\\.yaml$/"
+      ],
+      "matchStrings": [
+        "chart:\\s*(?<depName>\\S+)\\s*\\n\\s*repoURL:\\s*(?<registryUrl>\\S+)\\s*\\n\\s*version:\\s*(?<currentValue>\\S+)"
+      ],
+      "datasourceTemplate": "helm"
+    },
+    {
+      "customType": "regex",
+      "description": "Vendored Gateway API — the `version` on the catalog element, re-vendored with `just vendor-gateway-api`",
+      "managerFilePatterns": ["/^L1/platform/appset-vendored\\.yaml$/"],
+      "matchStrings": [
+        "component:\\s*gateway-api\\s*\\n\\s*manifestPath:\\s*\\S+\\s*\\n\\s*version:\\s*(?<currentValue>\\S+)"
+      ],
+      "depNameTemplate": "kubernetes-sigs/gateway-api",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "description": "Argo CD itself — the ARGO_VERSION pin in the bootstrap script",
+      "managerFilePatterns": ["/^L1/bootstrap/up\\.sh$/"],
+      "matchStrings": [
+        "ARGO_VERSION=\"(?<currentValue>[^\"]+)\""
+      ],
+      "depNameTemplate": "argoproj/argo-cd",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "description": "Tool pins inside CI steps that are not actions (kubeconform, kind)",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.yml$/"],
+      "matchStrings": [
+        "download/(?<currentValue>v[0-9.]+)/kubeconform-linux-amd64\\.tar\\.gz",
+        "kind\\.sigs\\.k8s\\.io/dl/(?<currentValue>v[0-9.]+)/kind-linux-amd64"
+      ],
+      "depNameTemplate": "{{#if (containsString matchString 'kubeconform')}}yannh/kubeconform{{else}}kubernetes-sigs/kind{{/if}}",
+      "datasourceTemplate": "github-releases"
+    }
+  ],
+
+  "packageRules": [
+    {
+      "description": [
+        "THE ISTIO RELEASE TRAIN. base, cni, istiod and ztunnel are one release and the",
+        "control plane will not tolerate them at different versions — istiod at 1.31 with",
+        "a 1.30 ztunnel is a broken dataplane, not a partial upgrade. One PR, always.",
+        "",
+        "Never automerged and never grouped with anything else: L1/platform/appset.yaml",
+        "records that istio-csr sits mid-chain in the mesh's own trust bootstrap, so an",
+        "Istio bump is a change to read release notes for, not to rubber-stamp."
+      ],
+      "matchDatasources": ["helm"],
+      "matchPackageNames": ["base", "cni", "istiod", "ztunnel"],
+      "groupName": "istio",
+      "automerge": false
+    },
+    {
+      "description": [
+        "cert-manager and istio-csr are coupled the other way round: istio-csr signs every",
+        "workload certificate THROUGH cert-manager, so its supported cert-manager range is",
+        "the constraint. Grouped so the pair is evaluated together."
+      ],
+      "matchDatasources": ["helm"],
+      "matchPackageNames": ["cert-manager", "cert-manager-istio-csr"],
+      "groupName": "cert-manager",
+      "automerge": false
+    },
+    {
+      "description": [
+        "Major bumps of anything that owns cluster state get a PR that says so plainly.",
+        "For Temporal in particular a major is a schema migration against an external",
+        "database this repo does not own — see the manageSchema note in",
+        "L2/envs/dev-local/temporal.yaml."
+      ],
+      "matchUpdateTypes": ["major"],
+      "addLabels": ["major"],
+      "automerge": false
+    },
+    {
+      "description": [
+        "GitHub Actions are the one place automerge is reasonable: a bad action version",
+        "breaks CI loudly and immediately, and cannot reach the cluster. Patch and minor",
+        "only — a major is an interface change to read about."
+      ],
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true
+    }
+  ],
+
+  "vulnerabilityAlerts": {
+    "description": "A CVE is not a Monday-morning matter.",
+    "schedule": ["at any time"],
+    "labels": ["security"],
+    "prPriority": 10
+  }
+}

@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # L0/local/up.sh — provision the local kind cluster and publish the L0 contract.
 #
-# Contract outputs (see ../contract.md):
+# THE CONTRACT THIS PUBLISHES — the same three keys L0/aws/outputs.tf and
+# L0/gcp/outputs.tf emit, because L1 and L2 are written against the keys and not
+# against the provider:
 #   kubeconfig   -> ./kubeconfig
 #   storageClass -> standard          (kind's local-path-provisioner)
 #   lbEndpoint   -> 127.0.0.1:8080    (extraPortMapping -> NodePort 30080)
+#
+# Nothing is published until the cluster has been checked against it below.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -75,4 +79,4 @@ jq -n \
 log "L0 up. Contract published -> ${CONTRACT_OUT#"${HERE}/"}"
 jq . "${CONTRACT_OUT}"
 echo
-log "next: cd ../../L1 && just up"
+log "next: just up l1"

@@ -1,6 +1,7 @@
-# The L0 contract, as OpenTofu outputs. `just aws-up` pipes these through jq
-# into contract.json, so THESE NAMES ARE THE CONTRACT — they must match
-# L0/local/up.sh and L0/gcp/outputs.tf exactly. See ../contract.md.
+# The L0 contract, as OpenTofu outputs. `just cloud up aws` pipes these through
+# jq into contract.json, so THESE NAMES ARE THE CONTRACT — they must match
+# L0/local/up.sh and L0/gcp/outputs.tf exactly, and the `jq` filter in the root
+# justfile's `cloud` recipe selects them by name.
 
 output "storageClass" {
   description = "L0 CONTRACT — StorageClass name for every PVC in L1/L2."

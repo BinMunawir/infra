@@ -3,7 +3,13 @@
 # LIVE. This directory is a component in ../appset-vendored.yaml (wave 1), so
 # Argo applies it. istio-csr (wave 2) signs every workload certificate from the
 # intermediate issued below, and istiod's own CA server is off — see
-# ../../envs/dev-local/istiod.yaml. README.md has the full story.
+# ../../envs/dev-local/istiod.yaml.
+#
+# `just verify l1` section 7 asserts all of this from the live cluster: both
+# Certificates Ready, istio-csr serving, ENABLE_CA_SERVER=false, and the trust
+# root every workload is handed actually carrying the maal-mesh-root subject.
+# That last check is the one that matters — istiod self-signing is invisible
+# from Application status, because every component reads Healthy either way.
 #
 # What this builds:
 #

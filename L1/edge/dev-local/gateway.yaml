@@ -32,8 +32,9 @@ metadata:
   namespace: maal-edge
   annotations:
     # kind has no cloud load balancer, so a LoadBalancer Service would sit at
-    # <pending> forever (L0/contract.md). NodePort is what the port mapping
-    # expects. Cloud envs drop this annotation and get a real LB.
+    # <pending> forever. NodePort is what the extraPortMapping in
+    # L0/local/kind.yaml expects. Cloud envs drop this annotation and get a
+    # real LB.
     networking.istio.io/service-type: NodePort
 spec:
   gatewayClassName: istio

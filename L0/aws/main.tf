@@ -2,7 +2,7 @@
 #
 # STATUS: unvalidated skeleton. The shape is right and the outputs are the
 # contract; the resource details have not been applied against a real account.
-# Read aws/README.md before running `just aws-up`.
+# `just check tofu` validates it; `just cloud up aws` would apply it.
 #
 # TWO-PHASE APPLY: the `kubernetes` provider in versions.tf is configured from
 # module.eks outputs, so a cold `tofu apply` on an empty state cannot plan the
@@ -101,8 +101,10 @@ module "ebs_csi_irsa" {
 }
 
 # ─── the storageClass contract output ──────────────────────────────────────
-# EKS ships a `gp2` default with Immediate binding, which violates the contract
-# (see ../contract.md). Create a compliant gp3 class and make it the default.
+# EKS ships a `gp2` default with Immediate binding, which violates the contract:
+# `just verify l0` asserts volumeBindingMode=WaitForFirstConsumer, and L0/local/
+# up.sh refuses to publish a contract without it. Create a compliant gp3 class
+# and make it the default.
 
 resource "kubernetes_storage_class_v1" "gp3" {
   metadata {

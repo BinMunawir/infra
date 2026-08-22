@@ -63,8 +63,12 @@ variable "node_instance_type" {
 
 variable "enable_network_policy" {
   description = <<-EOT
-    Enable the VPC CNI network-policy agent. Unlike kindnet this genuinely
-    enforces NetworkPolicy — see the asymmetry list in ../contract.md.
+    Enable the VPC CNI network-policy agent. Unlike kindnet — the CNI L0
+    provisions locally, which accepts NetworkPolicy objects and enforces
+    nothing — this genuinely enforces them. That asymmetry is why
+    L2/charts/go-service ships `networkPolicy.enabled: false` by default: the
+    rules are written down there, and an env with this set to true is the kind
+    that can turn them on.
   EOT
   type        = bool
   default     = true

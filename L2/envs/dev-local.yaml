@@ -12,8 +12,14 @@ destination:
 # Same reasoning as L1: Argo only reads Git, and L0's contract.json is generated
 # and gitignored. `just verify` fails if this copy and the live cluster differ.
 #
-# storageClass matters more here than in L1 — every CNPG Cluster L2 declares
-# names it, and a wrong value means a Postgres that never binds a volume.
+# storageClass currently has NO consumer in this layer. It used to: L2 ran an
+# in-cluster CloudNativePG operator and every Cluster object named this class.
+# That operator is gone on purpose — every database is external now, the cluster
+# stores no database state, and L2 declares no PVC at all.
+#
+# The mirror stays anyway, for the same reason L2/bootstrap/up.sh still checks
+# it: the CONTRACT has not changed, and the first workload here that does want a
+# volume should not be the thing that discovers this drifted.
 contract:
   storageClass: standard
   lbEndpoint: "127.0.0.1:8080"

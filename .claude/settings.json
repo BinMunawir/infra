@@ -59,8 +59,22 @@
       "Bash(KUBECONFIG=__TRACKED_VAR__ kubectl -n argocd get secret argocd-initial-admin-secret -o 'jsonpath={.data.password}')",
       "Bash(KUBECONFIG=__CMDSUB_OUTPUT__ kubectl -n argocd get secret argocd-initial-admin-secret -o 'jsonpath={.data.password}')",
       "Read(//private/etc/**)",
-      "Bash(ping -c1 -W1 temporal.maal.local)"
+      "Bash(ping -c1 -W1 temporal.maal.local)",
+      "Bash(python3 -c ' *)",
+      "Bash(ruby -ryaml -e ' *)",
+      "Bash(FORCE=1 ./local/down.sh)",
+      "Bash(./local/up.sh)",
+      "Bash(./bootstrap/up.sh)",
+      "Bash(openssl s_client -connect 127.0.0.1:8080 -servername keycloak.127.0.0.1.nip.io)",
+      "Bash(openssl x509 *)",
+      "Bash(ls -la /Users/almunawir/temp/client/*.md /Users/almunawir/temp/maalstream_ph/*.md 2>&1 | head -20; echo \"---\"; ls /Users/almunawir/temp/ 2>&1)",
+      "Read(//Users/almunawir/temp/client/**)",
+      "Read(//Users/almunawir/temp/**)",
+      "Bash(cd /Users/almunawir/temp/infra; helm template maal-business L2/charts/go-service -f L2/envs/dev-local/maal-business.yaml --set networkPolicy.enabled=true > /tmp/np-test.yaml 2>&1 && sed -n '/kind: NetworkPolicy/,$p' /tmp/np-test.yaml | grep -E '^\\\\s*\\(ingress|egress|policyTypes|kind\\):' )"
     ],
-    "defaultMode": "dontAsk"
+    "defaultMode": "dontAsk",
+    "additionalDirectories": [
+      "/tmp"
+    ]
   }
 }

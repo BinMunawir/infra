@@ -3,7 +3,9 @@
 # The ambient node proxy: a DaemonSet giving mesh-wide L4 mTLS with no sidecars.
 # This is the control that replaces the pod-to-pod encryption Cilium WireGuard
 # would have provided — and on kind it is the ONLY real network control, since
-# kindnet enforces no NetworkPolicy (see L0/contract.md).
+# kindnet accepts NetworkPolicy objects and enforces none of them. That is why
+# L2/charts/go-service ships `networkPolicy.enabled: false`: locally the mesh
+# authz is the enforcement, and a cloud CNI is what makes the other half real.
 resources:
   requests:
     cpu: 50m

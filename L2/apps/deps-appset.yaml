@@ -114,6 +114,29 @@ spec:
           labels:
             istio.io/dataplane-mode: ambient
             maal/dep: '{{.app}}'
+
+            # POD SECURITY ADMISSION — `baseline`, not `restricted`.
+            #
+            # The services in ../apps/services-appset.yaml get `restricted`,
+            # because charts/go-service is ours and already renders to that
+            # profile. These are UPSTREAM charts: Temporal's schema jobs and
+            # the keycloakx chart set their own pod security contexts, and
+            # neither promises the `restricted` profile across version bumps.
+            # Enforcing it here would mean a chart bump could start silently
+            # rejecting pods at admission — turning someone else's release note
+            # into our outage.
+            #
+            # `baseline` still blocks the things that actually matter for a
+            # namespace on the shared mesh: privileged containers, host
+            # namespaces, hostPath volumes, and unsafe sysctls.
+            #
+            # The audit/warn labels are `restricted` on purpose. They are
+            # non-blocking, so they cost nothing and they tell us exactly how
+            # far each chart is from the stricter profile — which is the
+            # evidence needed before promoting enforce to `restricted` here.
+            pod-security.kubernetes.io/enforce: baseline
+            pod-security.kubernetes.io/audit: restricted
+            pod-security.kubernetes.io/warn: restricted
         retry:
           limit: 10
           backoff:

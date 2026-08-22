@@ -7,7 +7,9 @@ description: >-
 type: application
 
 # Chart version — bump on any template change.
-version: 0.1.0
+# 0.2.0 — adds templates/networkpolicy.yaml (default-deny ingress + egress,
+#         off by default) and the networkPolicy values block.
+version: 0.2.0
 
 # No appVersion: this chart deploys many services at many versions. The image
 # tag lives in each service's values file.

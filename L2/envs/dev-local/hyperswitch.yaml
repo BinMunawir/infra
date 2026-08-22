@@ -7,9 +7,10 @@
 # It used to be wired in as a placeholder, with a permanently red
 # `dev-local-hyperswitch` documented as expected. That was the wrong call by
 # this repo's own rules: a red Application that is normal trains everyone to
-# stop reading the dashboard, which is the one thing the conventions in
-# ../../../README.md are trying hardest to prevent. Parked properly instead —
-# the same treatment maal-ledger gets, for the same reason.
+# stop reading the dashboard, which is the one thing `just verify` is built
+# hardest to prevent — every check there is scoped so that a green run means
+# something. Parked properly instead — the same treatment maal-ledger gets, for
+# the same reason.
 #
 # Why it is harder than the others:
 #

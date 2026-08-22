@@ -1,5 +1,6 @@
 # The L0 contract, as OpenTofu outputs. These names must match L0/aws/outputs.tf
-# and L0/local/up.sh exactly. See ../contract.md.
+# and L0/local/up.sh exactly, and the `jq` filter in the root justfile's `cloud`
+# recipe selects them by name.
 
 output "storageClass" {
   description = "L0 CONTRACT — StorageClass name for every PVC in L1/L2."

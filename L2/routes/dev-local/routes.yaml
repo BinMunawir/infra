@@ -45,7 +45,7 @@
 # this laptop. A cloud env replaces this directory with routes carrying real
 # hostnames in a zone it owns.
 #
-#   just urls         # prints the reachable URLs  (from L1)
+#   just urls         # prints the reachable URLs, read from these very routes
 #
 # ─── why every default is written out ──────────────────────────────────────
 # `parentRefs` and `rules` are ATOMIC lists in the HTTPRoute schema, and this

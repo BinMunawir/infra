@@ -78,9 +78,9 @@ workloads:
     nodeSelector: {}
     tolerations: []
     affinity: {}
-    # Spread replicas across zones. Inert on kind (one fake zone — see
-    # L0/contract.md) and load-bearing on any real cluster, which is why it is
-    # declared here rather than remembered at migration time. ScheduleAnyway,
+    # Spread replicas across zones. Inert on kind, whose three nodes all report
+    # the same fake zone, and load-bearing on any real cluster — which is why it
+    # is declared here rather than remembered at migration time. ScheduleAnyway,
     # not DoNotSchedule: a spread constraint that can block scheduling turns a
     # zone outage into an outage.
     topologySpreadConstraints: []
@@ -124,8 +124,10 @@ secrets:
 
   # Store to pull from. ClusterSecretStore rather than SecretStore because
   # namespace-per-service would otherwise mean one store object per service,
-  # all identical. L2 creates one per env: `fake` locally, AWS/GCP Secret
-  # Manager in cloud. See L2/Readme.md.
+  # all identical. L1 owns exactly one per env — `fake` locally, AWS/GCP Secret
+  # Manager in cloud — at L1/secrets/<env>/cluster-secret-store.yaml. It lives
+  # there rather than here because it is a cluster-scoped connection to a
+  # backend, and external-secrets is an L1 component.
   storeRef:
     name: maal-secret-store
     kind: ClusterSecretStore
@@ -203,6 +205,62 @@ mesh:
     # cluster.local/ns/<ns>/sa/<serviceaccount>. Empty = deny all inbound,
     # which is correct for a Temporal worker: it makes only outbound calls.
     allowedPrincipals: []
+
+# ─── network policy ────────────────────────────────────────────────────────
+# Default-deny ingress AND egress at the CNI, below the mesh. This is a
+# DIFFERENT control from the AuthorizationPolicy above, not a duplicate of it:
+# that one filters inbound mesh traffic by identity, this one filters traffic
+# by address in both directions — and it is the only thing here that constrains
+# EGRESS, which matters because every database this platform talks to lives
+# outside the cluster.
+#
+# OFF BY DEFAULT because kindnet, the CNI L0 provisions locally, silently
+# enforces no NetworkPolicy at all. Turning it on in dev-local would change
+# nothing and prove nothing; the rules below are written so that a cloud env,
+# whose CNI does enforce them, can switch this on as a values change.
+# See templates/networkpolicy.yaml for the full reasoning.
+networkPolicy:
+  enabled: false
+
+  # Leave this on wherever the policy is on. A default-deny egress rule without
+  # a DNS allow breaks every outbound connection the pod makes — including the
+  # ones allowed below, because they resolve a hostname first.
+  allowDNS: true
+
+  # Raw NetworkPolicy ingress rules. Usually empty: a Temporal worker accepts
+  # nothing inbound, which is the same reason its authorizationPolicy has no
+  # allowedPrincipals and it gets no Service.
+  ingress: []
+    # - from:
+    #     - podSelector:
+    #         matchLabels:
+    #           app.kubernetes.io/name: maal-business
+
+  # Raw NetworkPolicy egress rules, appended after the DNS allow. What a
+  # typical Go service here needs:
+  #
+  #   - the Temporal frontend        in-cluster, namespace maal-temporal
+  #   - its external database        OUT of the cluster, so an ipBlock — there
+  #                                  is no pod to select, and this is the rule
+  #                                  that does not exist in a normal cluster
+  #
+  # The database CIDR is deliberately not defaulted. `0.0.0.0/0` would make the
+  # policy meaningless and a guess at an RDS subnet would be wrong everywhere
+  # but one account, so the environment that switches this on states it.
+  egress: []
+    # - to:
+    #     - namespaceSelector:
+    #         matchLabels:
+    #           kubernetes.io/metadata.name: maal-temporal
+    #   ports:
+    #     - protocol: TCP
+    #       port: 7233
+    # - to:
+    #     - ipBlock:
+    #         cidr: 10.0.0.0/16        # the subnet the managed Postgres is in
+    #   ports:
+    #     - protocol: TCP
+    #       port: 5432
 
 # ─── platform ──────────────────────────────────────────────────────────────
 serviceAccount:
