@@ -1,0 +1,23 @@
+# L2/deps/temporal/dep.yaml — the identity of one third-party dependency.
+#
+# THIS FILE IS THE CATALOG ENTRY. The deps ApplicationSet generates one
+# Application per file matching L2/deps/*/dep.yaml, so creating this directory
+# is what puts a dependency into the cluster — no shared file is edited.
+#
+# Deps differ from services in one way that matters: a service is our chart
+# (../../charts/go-service) with our values, a dep is SOMEONE ELSE'S chart
+# pinned to a version. That is why `chart`/`repoURL`/`version` live here and
+# have no equivalent in L2/services/*/service.yaml.
+#
+# The chart repoURL must also appear in ../../root/project.yaml `sourceRepos`
+# or Argo rejects the sync.
+
+app: temporal
+chart: temporal
+repoURL: https://go.temporal.io/helm-charts
+version: 1.6.0
+namespace: temporal
+
+# The workflow spine. Every capability in every Go service is a Temporal
+# workflow (blueprint.md §1), so this comes up first.
+wave: "0"

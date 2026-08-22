@@ -1,29 +1,24 @@
-# maal-business — dev-local.  ← THE REFERENCE SERVICE
+# client — dev-local.  ← THE REFERENCE SERVICE
 #
-# Source: ../../../client  (module github.com/BinMunawir/maal_business)
+# Source: git@github.com:BinMunawir/client.git
 #
 # This is the fully worked example: it exercises every feature of the
 # go-service chart — ConfigMap config, an external database whose credentials
 # arrive through an ExternalSecret, a second ExternalSecret of its own, and a
-# mesh policy. Copy this file when adding a service and delete what you don't
+# mesh policy. Copy this file when adding a service and delete what you do not
 # need.
 #
-# It is also the ONLY service in the catalog that can actually run: its Temporal
+# It is also the only service in the catalog that can actually run: its Temporal
 # adapter reads TEMPORAL__HOSTPORT / TEMPORAL__NAMESPACE from config and falls
 # back to the SDK defaults, and its pg adapter honours both DB_DSN and the
-# individual DB__* parts. The other two repos are parked for the opposite reason.
-#
-# STILL BLOCKED ON: a Dockerfile. The repo has none, and it is not under version
-# control at all (no .git), so there is no image to pull and nothing to build
-# from in CI. `just images` reports this rather than half-succeeding.
+# individual DB__* parts. paymenthub is parked for the opposite reason.
 
 image:
   # No registry locally. Build and load straight into kind:
-  #   cd ../client && docker build -t maal/business:dev .
-  #   kind load docker-image maal/business:dev --name maal-local
+  #   just image client
   # Cloud envs set image.registry to an ECR/GAR host and this becomes a pull.
   registry: ""
-  repository: maal/business
+  repository: client
   tag: dev
   pullPolicy: IfNotPresent
 
@@ -31,10 +26,6 @@ image:
 # The repo has cmd/{worker,starter,local}. Only `worker` is a long-running
 # process: `starter` kicks off a workflow and exits, `local` is a dev harness.
 # So one Deployment, not three.
-#
-# NOTE: the repo has no Dockerfile yet (only `ledger` does). The commands below
-# assume an image built like ledger's — binaries at /app/<name>, WORKDIR /app,
-# USER 1001.
 workloads:
   worker:
     command: ["/app/worker"]
@@ -54,16 +45,21 @@ config:
   mountPath: /app/config
   values:
     Service:
-      Name: maal_business
-      Title: Maal Business (Customer) Domain
+      # Matches the repository and the Go module,
+      # github.com/BinMunawir/client. (Renamed from maal_business on
+      # 2026-08-22 — if go.mod still reads the old path the rename has not
+      # landed yet. Nothing in this layer uses the module path as an
+      # identifier, so neither state breaks anything here.)
+      Name: client
+      Title: Client (Customer) Domain
       Root: "."
     Temporal:
       # In-cluster Temporal frontend. The chart's default namespace is
-      # `default`; give Maal its own before this is anything but dev.
-      HostPort: temporal-frontend.maal-temporal.svc.cluster.local:7233
+      # `default`; give this platform its own before it is anything but dev.
+      HostPort: temporal-frontend.temporal.svc.cluster.local:7233
       Namespace: default
     Keycloak:
-      BaseURL: http://keycloak-keycloakx-http.maal-keycloak.svc.cluster.local
+      BaseURL: http://keycloak-keycloakx-http.keycloak.svc.cluster.local
       Realm: maal
     # No Srv block: config.CNF.Srv has zero usages in this repo. The struct
     # declares Host/Port, but nothing binds them — blueprint.md §2 describes a
@@ -76,16 +72,18 @@ config:
 secrets:
   enabled: true
   data:
-    KEYCLOAK__ADMIN_TOKEN: maal/keycloak/admin-token
+    KEYCLOAK__ADMIN_TOKEN: keycloak/admin-token
 
 # ─── database (external) ───────────────────────────────────────────────────
 # The cluster runs no Postgres. This names one you manage yourself:
 # `host.docker.internal` is how a kind node reaches a container on your laptop;
 # a cloud env puts an RDS/Cloud SQL endpoint here and changes nothing else.
 #
-# Create it before the worker starts:
-#   CREATE ROLE maaladmin LOGIN PASSWORD '…';
-#   CREATE DATABASE maalbizdb OWNER maaladmin;
+# The role and database are created by `just db-init` from
+# ../../db/dev-local/bootstrap.sql. Their names keep the `maal` prefix on
+# purpose: they live in the external Postgres, outside the cluster, and
+# renaming them would create new empty databases beside the old ones rather
+# than rename anything.
 #
 # The credentials are remote keys, not values — they resolve through this
 # service's own ExternalSecret, so no database password is in this file or
@@ -95,17 +93,18 @@ database:
   enabled: true
   host: host.docker.internal
   port: 5432
-  name: maalbizdb            # matches the compose default in client/
+  name: maalbizdb            # external Postgres — see the note above
   sslmode: disable           # a laptop container; `require` in every real env
   credentials:
-    userKey: maal/business/db/username
-    passwordKey: maal/business/db/password
-    dsnKey: maal/business/db/dsn
+    userKey: client/db/username
+    passwordKey: client/db/password
+    dsnKey: client/db/dsn
 
 # ─── migrations ────────────────────────────────────────────────────────────
-# goose migrations live at client/internal/adapters/pg/migrations, but no
+# goose migrations live in the repo at internal/adapters/pg/migrations, but no
 # published image carries them yet. Turning this on before that exists produces
-# a Job that fails on every sync. See templates/migration-job.yaml.
+# a Job that fails on every sync. See ../../charts/go-service/templates/
+# migration-job.yaml.
 migrations:
   enabled: false
 

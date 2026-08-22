@@ -7,9 +7,13 @@ description: >-
 type: application
 
 # Chart version — bump on any template change.
+# 0.3.0 — values now live at L2/services/<service>/<stage>-<provider>.yaml
+#         rather than L2/envs/<env>/<service>.yaml; the pointer rendered into
+#         the ConfigMap changed with them, so this is a rendered-output change
+#         and not only a comment.
 # 0.2.0 — adds templates/networkpolicy.yaml (default-deny ingress + egress,
 #         off by default) and the networkPolicy values block.
-version: 0.2.0
+version: 0.3.0
 
 # No appVersion: this chart deploys many services at many versions. The image
 # tag lives in each service's values file.

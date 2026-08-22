@@ -1,0 +1,27 @@
+# L2/services/client/service.yaml — the identity of one Go service.
+#
+# THIS FILE IS THE CATALOG ENTRY. The services ApplicationSet generates one
+# Application per file matching L2/services/*/service.yaml, so creating this
+# directory is what puts a service into the cluster — no shared file is edited,
+# and `ls L2/services/` is the authoritative list of what exists.
+#
+# Everything else about this service lives beside it:
+#   ./service.yaml        identity (this file)
+#   ./<stage>-<provider>.yaml   chart values for that env
+#
+# Its ExternalSecret, ServiceAccount, AuthorizationPolicy and Service are all
+# rendered by ../../charts/go-service from the values file, so there is nothing
+# to co-locate that is not already here.
+
+service: client
+namespace: client
+wave: "1"
+
+# Source repo. Argo never clones this — it only ever reads the infra repo — but
+# `just images` builds from it, and it is the only place the mapping from a
+# running Deployment back to its source is written down.
+repo: git@github.com:BinMunawir/client.git
+
+# Image repository. The tag is env-specific and lives in the values file:
+# mutable `dev` locally, an immutable digest or SHA in cloud.
+image: client

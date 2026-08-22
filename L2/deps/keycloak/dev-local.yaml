@@ -1,7 +1,7 @@
 # Keycloak — dev-local
 #
-# The identity provider. maal_business holds only the `sub` reference; login,
-# credentials, and sessions are Keycloak's, not the domain's (client/service.md §0).
+# The identity provider. The client service holds only the `sub` reference; login,
+# credentials, and sessions are Keycloak's, not the domain's (the client repo's service.md §0).
 #
 # ─── the database is EXTERNAL ──────────────────────────────────────────────
 # Same rule as Temporal: the cluster runs no Postgres. Create the database and
@@ -10,7 +10,7 @@
 #   CREATE ROLE keycloak LOGIN PASSWORD '…';
 #   CREATE DATABASE keycloak OWNER keycloak;
 #
-# Credentials come from ../../secrets/dev-local/keycloak-db.yaml, whose Secret
+# Credentials come from ./dev-local/secrets/db.yaml, whose Secret
 # keys are named for the env vars below so there is nothing to translate.
 
 replicas: 1
@@ -20,8 +20,8 @@ replicas: 1
 # The chart still defaults relativePath to "/auth" for backwards compatibility
 # with Keycloak 16 and earlier. Keycloak 26 — which is what this chart's image
 # is — serves at the root, and every other reference in this repo assumes that:
-# ../../routes/dev-local/routes.yaml forwards the path unmodified and
-# maal-business's Keycloak.BaseURL carries no prefix. Leaving the default would
+# ./dev-local/routes/keycloak.yaml forwards the path unmodified and
+# the client service's Keycloak.BaseURL carries no prefix. Leaving the default would
 # 404 both while the pod reported healthy.
 #
 # It also moves the health endpoints the probes below use: they are derived from
@@ -67,26 +67,26 @@ extraEnv: |
   # Initial admin. Keycloak 26 reads KC_BOOTSTRAP_ADMIN_*; the KEYCLOAK_ADMIN_*
   # pair is the pre-26 spelling, kept alongside so an image bump in either
   # direction still boots with an admin. The Secret carries both keys — see
-  # ../../secrets/dev-local/keycloak-admin.yaml.
+  # ./dev-local/secrets/admin.yaml.
   - name: KC_BOOTSTRAP_ADMIN_USERNAME
     valueFrom:
       secretKeyRef:
-        name: maal-keycloak-admin
+        name: keycloak-admin
         key: KC_BOOTSTRAP_ADMIN_USERNAME
   - name: KC_BOOTSTRAP_ADMIN_PASSWORD
     valueFrom:
       secretKeyRef:
-        name: maal-keycloak-admin
+        name: keycloak-admin
         key: KC_BOOTSTRAP_ADMIN_PASSWORD
   - name: KEYCLOAK_ADMIN
     valueFrom:
       secretKeyRef:
-        name: maal-keycloak-admin
+        name: keycloak-admin
         key: KEYCLOAK_ADMIN
   - name: KEYCLOAK_ADMIN_PASSWORD
     valueFrom:
       secretKeyRef:
-        name: maal-keycloak-admin
+        name: keycloak-admin
         key: KEYCLOAK_ADMIN_PASSWORD
 
 # Off: the database is external. This subchart would create a second one.
@@ -120,7 +120,7 @@ health:
   enabled: true
 
 # No Ingress. The edge is a Gateway API Gateway — see
-# ../../edge/dev-local/gateway.yaml — and Keycloak is reachable at
+# ../../../L1/edge/dev-local/gateway.yaml — and Keycloak is reachable at
 # https://keycloak.127.0.0.1.nip.io:8080 with no local DNS setup at all.
 #
 # `--hostname-strict=false` above is what lets that hostname change without a

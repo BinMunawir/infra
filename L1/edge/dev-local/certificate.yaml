@@ -10,24 +10,24 @@
 #
 # CLOUD: replace this file with an ACME issuer (DNS-01 against the zone that
 # owns `edge_hostname` from the L0 contract). gateway.yaml does not change; it
-# references `maal-edge-tls` by name either way.
+# references `edge-tls` by name either way.
 #
 # ═══ WILDCARDS ONLY MATCH ONE LABEL ════════════════════════════════════════
 #
 # RFC 6125: a wildcard replaces exactly ONE label, and only the leftmost one.
 # `*.*.example` is not a valid SAN at all — one wildcard per name, maximum.
 #
-#     *.dev.maal.example   MATCHES      temporal.dev.maal.example
-#                          DOES NOT     web.temporal.dev.maal.example
-#                                       test1.web.temporal.dev.maal.example
+#     *.dev.example.com   MATCHES      temporal.dev.example.com
+#                          DOES NOT     web.temporal.dev.example.com
+#                                       test1.web.temporal.dev.example.com
 #
-# So a name like `test1.web.temporal.dev.maal.example` needs EVERY intermediate
+# So a name like `test1.web.temporal.dev.example.com` needs EVERY intermediate
 # level enumerated as its own SAN:
 #
 #     dnsNames:
-#       - "*.dev.maal.example"                    # temporal.dev...
-#       - "*.temporal.dev.maal.example"           # web.temporal.dev...
-#       - "*.web.temporal.dev.maal.example"       # test1.web.temporal.dev...
+#       - "*.dev.example.com"                    # temporal.dev...
+#       - "*.temporal.dev.example.com"           # web.temporal.dev...
+#       - "*.web.temporal.dev.example.com"       # test1.web.temporal.dev...
 #
 # That list grows with every zone you nest, and — worse for this layer — each
 # entry names an application, which is exactly the upward dependency moving the
@@ -36,7 +36,7 @@
 # ─── SO: FLAT NAMES ARE THE DEFAULT ────────────────────────────────────────
 # Encode the hierarchy in the label instead of in the zone:
 #
-#     test1-web-temporal.dev.maal.example      ← one wildcard covers it
+#     test1-web-temporal.dev.example.com      ← one wildcard covers it
 #
 # One SAN, unlimited depth, no app names in L1, and no per-preview certificate
 # issuance. This is what Vercel, Netlify and Heroku all do for preview
@@ -53,8 +53,8 @@
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
-  name: maal-edge-selfsigned
-  namespace: maal-edge
+  name: edge-selfsigned
+  namespace: edge
 spec:
   selfSigned: {}
 ---
@@ -64,39 +64,39 @@ spec:
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: maal-edge-ca
-  namespace: maal-edge
+  name: edge-ca
+  namespace: edge
 spec:
   isCA: true
   commonName: maal-local-ca
-  secretName: maal-edge-ca
+  secretName: edge-ca
   duration: 87600h     # 10y — a dev root nobody wants to re-trust quarterly
   renewBefore: 8760h
   privateKey:
     algorithm: ECDSA
     size: 256
   issuerRef:
-    name: maal-edge-selfsigned
+    name: edge-selfsigned
     kind: Issuer
     group: cert-manager.io
 ---
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
-  name: maal-edge-ca
-  namespace: maal-edge
+  name: edge-ca
+  namespace: edge
 spec:
   ca:
-    secretName: maal-edge-ca
+    secretName: edge-ca
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: maal-edge-tls
-  namespace: maal-edge
+  name: edge-tls
+  namespace: edge
 spec:
   # The Gateway's certificateRefs names this Secret.
-  secretName: maal-edge-tls
+  secretName: edge-tls
   duration: 2160h      # 90d, ACME-shaped so local and cloud behave alike
   renewBefore: 360h
   privateKey:
@@ -119,6 +119,6 @@ spec:
   dnsNames:
     - "*.127.0.0.1.nip.io"
   issuerRef:
-    name: maal-edge-ca
+    name: edge-ca
     kind: Issuer
     group: cert-manager.io

@@ -1,6 +1,7 @@
-# maal-stream-ph — dev-local.  ⚠ PARKED AT ZERO REPLICAS
+# paymenthub — dev-local.  ⚠ PARKED AT ZERO REPLICAS
 #
-# Source: ../../../maalstream_ph  (module github.com/BinMunawir/maalstream_ph)
+# Source: git@github.com:BinMunawir/paymenthub.git  (module
+# github.com/BinMunawir/paymenthub; renamed from maalstream_ph 2026-08-22)
 #
 # WHY IT IS PARKED
 # The repo's internal/adapters/temporal/client.go dials client.DefaultHostPort
@@ -11,15 +12,18 @@
 # log.Fatalf — so the container would exit at startup and CrashLoopBackOff.
 #
 # TO UN-PARK: add a Temporal block to the repo's config (HostPort + Namespace,
-# mirroring ../../../client/config/config.go) and the `if == "" { default }`
-# fallbacks in its temporal adapter. Then set replicas: 1 and uncomment the
-# Temporal values below. Nothing else here changes.
+# mirroring the client repo's config/config.go) and the `if == "" { default }`
+# fallbacks in its temporal adapter — internal/adapters/temporal/client.go:15
+# still passes client.DefaultHostPort straight into client.Dial(). Then set
+# replicas: 1 and uncomment the Temporal values below. Nothing else changes.
 #
-# It also has no Dockerfile yet — `just images` says so rather than guessing.
+# The Dockerfile blocker is GONE: as of the paymenthub rename both Dockerfile
+# and .dockerignore are tracked in the repo, so the image is reproducible from
+# source control. The Temporal hardcoding above is the only thing left.
 
 image:
   registry: ""
-  repository: maal/stream-ph
+  repository: paymenthub
   tag: dev
   pullPolicy: IfNotPresent
 
@@ -48,12 +52,12 @@ config:
       # Name and Title are "ledger" — a copy-paste leftover from the service
       # template. cleanenv resolves YAML above the struct default, so this
       # ConfigMap is the infra-side correction without touching the repo.
-      Name: maalstream_ph
-      Title: Maal Stream PH
+      Name: paymenthub
+      Title: Payment Hub
       Root: "."
     # Uncomment once the repo has a Temporal config block (see header):
     # Temporal:
-    #   HostPort: temporal-frontend.maal-temporal.svc.cluster.local:7233
+    #   HostPort: temporal-frontend.temporal.svc.cluster.local:7233
     #   Namespace: default
     #
     # No Srv block: config.CNF.Srv has zero usages in this repo, so setting a
@@ -67,26 +71,24 @@ secrets:
 # ─── database (external) ───────────────────────────────────────────────────
 # The wiring is correct even though the worker is parked: this repo assembles
 # its DSN from the individual DB__* parts, which is what the chart injects.
-# (Its DB_DSN field is declared but never read by dsnBuilder(), unlike client's
-# — wired anyway, so un-parking needs no change here.)
+# (Its DB_DSN field is declared but never read by dsnBuilder(), unlike the
+# client repo's — wired anyway, so un-parking needs no change here.)
 #
 # Nothing is provisioned by declaring this. The database lives outside the
-# cluster, so a parked service costs an ExternalSecret and nothing else — which
-# is the useful difference from the previous in-cluster arrangement, where a
-# parked worker still ran a Postgres and held a volume.
+# cluster, so a parked service costs an ExternalSecret and nothing else.
 #
-#   CREATE ROLE phadmin LOGIN PASSWORD '…';
-#   CREATE DATABASE phdb OWNER phadmin;
+# The role `phadmin` and database `phdb` are created by `just db-init` from
+# ../../db/dev-local/bootstrap.sql.
 database:
   enabled: true
   host: host.docker.internal
   port: 5432
-  name: phdb              # matches the compose default in maalstream_ph/
+  name: phdb
   sslmode: disable
   credentials:
-    userKey: maal/stream-ph/db/username
-    passwordKey: maal/stream-ph/db/password
-    dsnKey: maal/stream-ph/db/dsn
+    userKey: paymenthub/db/username
+    passwordKey: paymenthub/db/password
+    dsnKey: paymenthub/db/dsn
 
 migrations:
   enabled: false

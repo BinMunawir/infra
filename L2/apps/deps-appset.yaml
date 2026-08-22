@@ -1,13 +1,26 @@
-# L2/apps/deps-appset.yaml — the third-party applications the Maal services run
-# against: Temporal, Keycloak, Hyperswitch.
+# L2/apps/deps-appset.yaml — the third-party applications the Go services run
+# against: Temporal and Keycloak.
 #
 # These are instances, not capabilities — L1 installs the operators, L2 declares
 # what runs. The split is the whole reason L1 stays reusable under a different
 # product.
 #
-# Their databases are EXTERNAL. Each chart is pointed at a host in ../envs/, and
-# its credentials come from an ExternalSecret in ../secrets/<env>/. Nothing here
-# creates a database, and the cluster stores no database state.
+# THE CATALOG IS THE FILESYSTEM, exactly as it is for services: one directory
+# per dependency under ../deps/, each holding a dep.yaml. Adding one never
+# edits this file.
+#
+#   ls L2/deps/                        what third-party software runs here
+#   L2/deps/<name>/dep.yaml            identity: chart, repo, version, ns, wave
+#   L2/deps/<name>/<stage>-<provider>.yaml   chart values for that env
+#
+# Their databases are EXTERNAL. Each chart is pointed at a host in its values
+# file, and its credentials come from an ExternalSecret in ../secrets/<env>/.
+# Nothing here creates a database, and the cluster stores no database state.
+#
+# HYPERSWITCH was removed entirely — chart, values and AppProject sourceRepos.
+# It is PCI-adjacent, ships a stack of four components, and configures its
+# Postgres inside the chart rather than pointing at an external host, so
+# adopting it is a deliberate session rather than a values tweak.
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
@@ -20,64 +33,31 @@ spec:
   generators:
     - matrix:
         generators:
+          # ── dimension 1: the env cells ─────────────────────────────────
           - git:
               repoURL: git@github.com:BinMunawir/infra.git
               revision: main
               files:
                 - path: L2/envs/*.yaml
-                # Recursive glob — see the note in L1/platform/appset.yaml.
-                - path: L2/envs/*/*.yaml
-                  exclude: true
 
-          - list:
-              elements:
-                # The workflow spine. Every capability in every Go service is a
-                # Temporal workflow (blueprint.md §1), so this comes up first.
-                - app: temporal
-                  chart: temporal
-                  repoURL: https://go.temporal.io/helm-charts
-                  version: 1.6.0
-                  namespace: maal-temporal
-                  wave: "0"
-
-                # Identity. maal_business provisions organizations and users
-                # here through its keycloak port.
-                - app: keycloak
-                  chart: keycloakx
-                  repoURL: https://codecentric.github.io/helm-charts
-                  version: 7.2.3
-                  namespace: maal-keycloak
-                  wave: "0"
-
-                # PARKED — hyperswitch is removed from this catalog, not merely
-                # disabled, for the same reason maal-ledger is removed from the
-                # service catalog: it cannot work as configured, and an
-                # Application that is permanently red teaches everyone to stop
-                # reading the dashboard.
-                #
-                # hyperswitch-app is a stack (router, card vault, key manager,
-                # control centre), it is PCI-adjacent, and its Postgres is
-                # configured inside the chart rather than pointed at an external
-                # host — so adopting it is a deliberate session, not a values
-                # tweak. The reasoning and the re-entry path are kept in
-                # ../envs/dev-local/hyperswitch.yaml, which is inert until this
-                # element comes back:
-                #
-                #   - app: hyperswitch
-                #     chart: hyperswitch-app
-                #     repoURL: https://juspay.github.io/hyperswitch-helm
-                #     version: 1.1.8
-                #     namespace: maal-hyperswitch
-                #     wave: "1"
+          # ── dimension 2: the dependency catalog, read from the filesystem ─
+          # The glob pins the filename, so a dep's values files — named
+          # <stage>-<provider>.yaml — are never picked up as catalog entries
+          # even though Argo's file glob is recursive.
+          - git:
+              repoURL: git@github.com:BinMunawir/infra.git
+              revision: main
+              files:
+                - path: L2/deps/*/dep.yaml
 
   template:
     metadata:
       name: '{{.stage}}-{{.provider}}-{{.app}}'
       labels:
-        maal/stage: '{{.stage}}'
-        maal/provider: '{{.provider}}'
-        maal/dep: '{{.app}}'
-        maal/wave: '{{.wave}}'
+        service/stage: '{{.stage}}'
+        service/provider: '{{.provider}}'
+        service/dep: '{{.app}}'
+        service/wave: '{{.wave}}'
       annotations:
         argocd.argoproj.io/sync-wave: '{{.wave}}'
       finalizers:
@@ -93,7 +73,7 @@ spec:
             releaseName: '{{.app}}'
             ignoreMissingValueFiles: true
             valueFiles:
-              - $values/L2/envs/{{.stage}}-{{.provider}}/{{.app}}.yaml
+              - $values/L2/deps/{{.app}}/{{.stage}}-{{.provider}}.yaml
 
         - repoURL: git@github.com:BinMunawir/infra.git
           targetRevision: main
@@ -113,15 +93,15 @@ spec:
         managedNamespaceMetadata:
           labels:
             istio.io/dataplane-mode: ambient
-            maal/dep: '{{.app}}'
+            service/dep: '{{.app}}'
 
             # POD SECURITY ADMISSION — `baseline`, not `restricted`.
             #
-            # The services in ../apps/services-appset.yaml get `restricted`,
-            # because charts/go-service is ours and already renders to that
-            # profile. These are UPSTREAM charts: Temporal's schema jobs and
-            # the keycloakx chart set their own pod security contexts, and
-            # neither promises the `restricted` profile across version bumps.
+            # The services in ./services-appset.yaml get `restricted`, because
+            # charts/go-service is ours and already renders to that profile.
+            # These are UPSTREAM charts: Temporal's schema jobs and the
+            # keycloakx chart set their own pod security contexts, and neither
+            # promises the `restricted` profile across version bumps.
             # Enforcing it here would mean a chart bump could start silently
             # rejecting pods at admission — turning someone else's release note
             # into our outage.

@@ -71,8 +71,8 @@ kubectl -n "${ARGOCD_NS}" get appproject platform >/dev/null 2>&1 \
 kubectl get clustersecretstore maal-secret-store >/dev/null 2>&1 \
   || die "the L1 ClusterSecretStore 'maal-secret-store' is missing — every ExternalSecret here would sit Pending
     check: just verify l1"
-kubectl -n maal-edge get gateway maal-edge >/dev/null 2>&1 \
-  || die "the L1 Gateway 'maal-edge' is missing — every HTTPRoute here would have no parent to attach to
+kubectl -n edge get gateway edge >/dev/null 2>&1 \
+  || die "the L1 Gateway 'edge' is missing — every HTTPRoute here would have no parent to attach to
     check: just verify l1"
 
 log "L1 capabilities and edge present"

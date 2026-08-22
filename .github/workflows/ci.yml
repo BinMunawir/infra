@@ -61,8 +61,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/rendered
-          for f in L2/envs/dev-local/maal-*.yaml; do
-            s=$(basename "$f" .yaml)
+          for d in L2/services/*/; do
+            s=$(basename "$d")
+            f="$d/dev-local.yaml"
+            [ -f "$f" ] || continue
             helm template "$s" L2/charts/go-service -f "$f" > "/tmp/rendered/$s.yaml"
           done
 
@@ -78,14 +80,14 @@ jobs:
         run: |
           set -euo pipefail
           helm template netpol-probe L2/charts/go-service \
-            -f L2/envs/dev-local/maal-business.yaml \
+            -f L2/services/client/dev-local.yaml \
             --set networkPolicy.enabled=true \
             --set 'networkPolicy.egress[0].to[0].ipBlock.cidr=10.0.0.0/16' \
             --set 'networkPolicy.egress[0].ports[0].port=5432' \
             --set 'networkPolicy.egress[0].ports[0].protocol=TCP' \
             > /tmp/rendered/_netpol-probe.yaml
           helm template migrate-probe L2/charts/go-service \
-            -f L2/envs/dev-local/maal-business.yaml \
+            -f L2/services/client/dev-local.yaml \
             --set migrations.enabled=true \
             --set migrations.image=example/goose:dev \
             > /tmp/rendered/_migrate-probe.yaml
@@ -122,7 +124,8 @@ jobs:
             -schema-location default \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
             L1/platform L1/root L1/envs L1/edge L1/secrets \
-            L2/apps L2/root L2/secrets L2/routes
+            L2/apps L2/root \
+            L2/deps/*/*/routes L2/deps/*/*/secrets
 
   # ─── security posture of what we actually deploy ─────────────────────────
   security:
@@ -139,8 +142,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/rendered
-          for f in L2/envs/dev-local/maal-*.yaml; do
-            s=$(basename "$f" .yaml)
+          for d in L2/services/*/; do
+            s=$(basename "$d")
+            f="$d/dev-local.yaml"
+            [ -f "$f" ] || continue
             helm template "$s" L2/charts/go-service -f "$f" > "/tmp/rendered/$s.yaml"
           done
 
@@ -179,10 +184,10 @@ jobs:
           format: table
 
       # NOTE: container IMAGE scanning is not here, and cannot be. The images
-      # this platform runs are built from sibling repos (../client,
-      # ../maalstream_ph) that CI has no access to — see the catalog note in
-      # L2/apps/services-appset.yaml. Image scanning belongs in the workflow
-      # that builds each image, next to the Dockerfile it scans.
+      # this platform runs are built from the repos named in each
+      # L2/services/<name>/service.yaml, which CI has no access to. Image
+      # scanning belongs in the workflow that builds each image, next to the
+      # Dockerfile it scans.
 
   # ─── the repo's own consistency rules ────────────────────────────────────
   conventions:

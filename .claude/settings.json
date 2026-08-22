@@ -70,7 +70,10 @@
       "Bash(ls -la /Users/almunawir/temp/client/*.md /Users/almunawir/temp/maalstream_ph/*.md 2>&1 | head -20; echo \"---\"; ls /Users/almunawir/temp/ 2>&1)",
       "Read(//Users/almunawir/temp/client/**)",
       "Read(//Users/almunawir/temp/**)",
-      "Bash(cd /Users/almunawir/temp/infra; helm template maal-business L2/charts/go-service -f L2/envs/dev-local/maal-business.yaml --set networkPolicy.enabled=true > /tmp/np-test.yaml 2>&1 && sed -n '/kind: NetworkPolicy/,$p' /tmp/np-test.yaml | grep -E '^\\\\s*\\(ingress|egress|policyTypes|kind\\):' )"
+      "Bash(cd /Users/almunawir/temp/infra; helm template maal-business L2/charts/go-service -f L2/envs/dev-local/maal-business.yaml --set networkPolicy.enabled=true > /tmp/np-test.yaml 2>&1 && sed -n '/kind: NetworkPolicy/,$p' /tmp/np-test.yaml | grep -E '^\\\\s*\\(ingress|egress|policyTypes|kind\\):' )",
+      "Bash(tee /private/tmp/claude-501/-Users-almunawir-temp-infra/e7a7a923-840f-4329-94e4-54313bcc1284/scratchpad/up.log)",
+      "Bash(KUBECONFIG=$\\(just _kubeconfig \\) kubectl -n argocd get applications)",
+      "Bash(gh run *)"
     ],
     "defaultMode": "dontAsk",
     "additionalDirectories": [

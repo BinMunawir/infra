@@ -59,7 +59,7 @@ spec:
           # ── dimension 2: the component catalog ─────────────────────────
           # `wave` orders components within an env. It does that through TWO
           # mechanisms with different strengths, and the difference matters:
-          # the `platform.maal/wave` LABEL feeds the RollingSync steps at the
+          # the `platform/wave` LABEL feeds the RollingSync steps at the
           # bottom of this file, which genuinely gate each step on the previous
           # one going Healthy; the sync-wave ANNOTATION only orders resources
           # within a single Application. The appsets that carry no RollingSync
@@ -167,23 +167,23 @@ spec:
     rollingSync:
       steps:
         - matchExpressions:
-            - key: platform.maal/wave
+            - key: platform/wave
               operator: In
               values: ["0"]
         - matchExpressions:
-            - key: platform.maal/wave
+            - key: platform/wave
               operator: In
               values: ["1"]
         - matchExpressions:
-            - key: platform.maal/wave
+            - key: platform/wave
               operator: In
               values: ["2"]
         - matchExpressions:
-            - key: platform.maal/wave
+            - key: platform/wave
               operator: In
               values: ["3"]
         - matchExpressions:
-            - key: platform.maal/wave
+            - key: platform/wave
               operator: In
               values: ["4"]
 
@@ -191,10 +191,10 @@ spec:
     metadata:
       name: '{{.stage}}-{{.provider}}-{{.component}}'
       labels:
-        platform.maal/stage: '{{.stage}}'
-        platform.maal/provider: '{{.provider}}'
-        platform.maal/component: '{{.component}}'
-        platform.maal/wave: '{{.wave}}'
+        platform/stage: '{{.stage}}'
+        platform/provider: '{{.provider}}'
+        platform/component: '{{.component}}'
+        platform/wave: '{{.wave}}'
       annotations:
         argocd.argoproj.io/sync-wave: '{{.wave}}'
       finalizers:

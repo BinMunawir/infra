@@ -53,10 +53,10 @@ spec:
     metadata:
       name: '{{.stage}}-{{.provider}}-edge'
       labels:
-        platform.maal/stage: '{{.stage}}'
-        platform.maal/provider: '{{.provider}}'
-        platform.maal/component: edge
-        # No platform.maal/wave label here either — same reason as
+        platform/stage: '{{.stage}}'
+        platform/provider: '{{.provider}}'
+        platform/component: edge
+        # No platform/wave label here either — same reason as
         # ./secrets-appset.yaml. "5" would be a legal label where "-1" is not,
         # but a label that only some appsets carry is worse than one none of
         # them do: it looks like a selector and selects nothing.
@@ -74,7 +74,7 @@ spec:
           recurse: false
       destination:
         server: '{{.destination.server}}'
-        namespace: maal-edge
+        namespace: edge
       syncPolicy:
         automated:
           # prune:false — deleting the Gateway takes the istiod-provisioned
@@ -92,7 +92,7 @@ spec:
             # in front of its own ingress path. The absence of
             # `istio.io/dataplane-mode: ambient` here is the load-bearing part;
             # this label just makes the namespace's owner legible.
-            platform.maal/component: edge
+            platform/component: edge
         retry:
           limit: 10
           backoff:

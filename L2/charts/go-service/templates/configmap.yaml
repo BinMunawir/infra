@@ -14,7 +14,7 @@ metadata:
 data:
   {{ .Values.config.env }}.yml: |
     # Rendered by the go-service chart. Do not edit in-cluster — Argo selfHeal
-    # will revert it. Change L2/envs/<env>/<service>.yaml instead.
+    # will revert it. Change L2/services/<service>/<stage>-<provider>.yaml.
     Env: {{ .Values.config.env }}
     {{- with .Values.config.values }}
     {{- toYaml . | nindent 4 }}

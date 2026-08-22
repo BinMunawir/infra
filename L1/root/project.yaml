@@ -38,7 +38,7 @@ spec:
     # product — L2 owns only the HTTPRoutes, which live in the service
     # namespaces they front.
     - server: https://kubernetes.default.svc
-      namespace: maal-edge
+      namespace: edge
 
   # Deliberately '*'. These operators install CRDs, ClusterRoles, webhook
   # configurations, and APIServices; enumerating cluster-scoped kinds for four

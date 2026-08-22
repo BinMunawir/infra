@@ -47,8 +47,8 @@ BEGIN
             -- role        password
             ('keycloak',  'dev-placeholder-db-password'),  -- Keycloak's own store
             ('temporal',  'dev-placeholder-db-password'),  -- Temporal: both datastores
-            ('maaladmin', 'dev-placeholder-db-password'),  -- maal-business
-            ('phadmin',   'dev-placeholder-db-password')   -- maal-stream-ph
+            ('maaladmin', 'dev-placeholder-db-password'),  -- client
+            ('phadmin',   'dev-placeholder-db-password')   -- paymenthub
         ) AS t(name, password)
     LOOP
         IF EXISTS (SELECT FROM pg_roles WHERE rolname = r.name) THEN
@@ -69,11 +69,11 @@ $$;
 SELECT format('CREATE DATABASE %I OWNER %I', d.name, d.owner)
 FROM (VALUES
     -- database              owner        consumer
-    ('keycloak',            'keycloak'),  -- L2/envs/dev-local/keycloak.yaml      KC_DB_URL_DATABASE
-    ('temporal',            'temporal'),  -- L2/envs/dev-local/temporal.yaml      datastores.default
-    ('temporal_visibility', 'temporal'),  -- L2/envs/dev-local/temporal.yaml      datastores.visibility
-    ('maalbizdb',           'maaladmin'), -- L1/secrets/.../cluster-secret-store  maal/business/db/dsn
-    ('phdb',                'phadmin')    -- L1/secrets/.../cluster-secret-store  maal/stream-ph/db/dsn
+    ('keycloak',            'keycloak'),  -- L2/deps/keycloak/dev-local.yaml      KC_DB_URL_DATABASE
+    ('temporal',            'temporal'),  -- L2/deps/temporal/dev-local.yaml      datastores.default
+    ('temporal_visibility', 'temporal'),  -- L2/deps/temporal/dev-local.yaml      datastores.visibility
+    ('maalbizdb',           'maaladmin'), -- L1/secrets/.../cluster-secret-store  client/db/dsn
+    ('phdb',                'phadmin')    -- L1/secrets/.../cluster-secret-store  paymenthub/db/dsn
 ) AS d(name, owner)
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = d.name)
 \gexec

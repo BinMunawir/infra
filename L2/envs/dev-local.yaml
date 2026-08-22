@@ -1,6 +1,14 @@
 # L2/envs/dev-local.yaml — one cell on the same {stage} × {provider} matrix L1
-# uses. The filename is the identity, and the sibling directory of the same name
-# holds per-application values.
+# uses. The filename is the identity.
+#
+# This file holds only what is true of the ENV as a whole. Per-application
+# values are not here — they live next to the application they configure:
+#
+#   L2/services/<name>/dev-local.yaml    a Go service
+#   L2/deps/<name>/dev-local.yaml        a third-party chart
+#
+# so `ls L2/services/` is the list of services and nothing shares a directory
+# with something it is unrelated to.
 
 stage: dev
 provider: local
@@ -32,7 +40,7 @@ contract:
 serviceEnv: dev
 
 # ─── secrets backing ───────────────────────────────────────────────────────
-# Which provider the ClusterSecretStore in L2/secrets/<env>/ uses. Locally the
+# Which provider the ClusterSecretStore in L1/secrets/<env>/ uses. Locally the
 # `fake` provider serves literals from the store spec — there is no cloud secret
 # manager reachable from kind, and no workload identity to reach one with.
 secretProvider: fake

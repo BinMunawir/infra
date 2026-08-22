@@ -1,8 +1,16 @@
-# L2/apps/services-appset.yaml — the Maal Go services.
+# L2/apps/services-appset.yaml — the Go services.
 #
-# Every service is the same local chart (charts/go-service) with a different
-# values file. Adding a service is one catalog entry plus one values file; it
-# never touches a template.
+# THIS FILE IS NOT THE CATALOG ANY MORE. The catalog is the filesystem:
+# one directory per service under ../services/, each holding a service.yaml.
+# Adding a service means creating that directory — it never edits this file,
+# so two services can be added without touching anything the other reads.
+#
+#   ls L2/services/          the authoritative list of what exists
+#   L2/services/<name>/service.yaml     identity: namespace, wave, repo, image
+#   L2/services/<name>/<stage>-<provider>.yaml   chart values for that env
+#
+# Every service is the same local chart (../charts/go-service) with a different
+# values file; adding one never touches a template.
 #
 # Namespace per service, labelled for the ambient mesh by Argo rather than by
 # the chart — the namespace is not the chart's to own.
@@ -18,60 +26,53 @@ spec:
   generators:
     - matrix:
         generators:
+          # ── dimension 1: the env cells ─────────────────────────────────
           - git:
               repoURL: git@github.com:BinMunawir/infra.git
               revision: main
               files:
                 - path: L2/envs/*.yaml
-                # Recursive glob — see the note in L1/platform/appset.yaml.
-                - path: L2/envs/*/*.yaml
-                  exclude: true
 
-          # ── the service catalog ────────────────────────────────────────
-          # `repo` is the sibling working directory the image is built from —
-          # informational, but it is the only place the mapping from a running
-          # Deployment back to a source tree is written down.
+          # ── dimension 2: the service catalog, read from the filesystem ──
+          # One Application per L2/services/*/service.yaml. Argo's file glob is
+          # RECURSIVE (`*` crosses `/`), which is harmless here because the
+          # pattern pins the filename: a service's values files are named
+          # <stage>-<provider>.yaml and are never matched.
           #
           # PARKING, and which mechanism to use:
-          #
-          #   Removed from this catalog — the service CANNOT work at all, and
-          #   no amount of configuration fixes it. No Application is generated.
-          #   Its values file stays in ../envs/ with the reason at the top.
           #
           #   `replicas: 0` in the values file — the manifests are right but
           #   the repo or its image is not ready. The Application syncs green
           #   and runs no pods, so Argo shows the wiring rather than
           #   advertising a crash loop as the normal state.
           #
+          #   Delete the directory — the service cannot work at all, and no
+          #   amount of configuration fixes it.
+          #
           # Currently parked:
-          #   maal-ledger     removed  — hardcodes TigerBeetle at 127.0.0.1:4000
-          #                              and panics; needs a TigerBeetle instance
-          #                              and a config block in the repo
-          #   maal-stream-ph  0 replicas — its Temporal client hardcodes
-          #                              client.DefaultHostPort, so a pod would
-          #                              dial itself and log.Fatalf at startup
-          - list:
-              elements:
-                - service: maal-business
-                  repo: client                 # module github.com/BinMunawir/maal_business
-                  namespace: maal-business
-                  wave: "1"
-
-                - service: maal-stream-ph
-                  repo: maalstream_ph          # module github.com/BinMunawir/maalstream_ph
-                  namespace: maal-stream-ph
-                  wave: "1"
+          #   paymenthub  0 replicas — its Temporal client hardcodes
+          #                            client.DefaultHostPort, so a pod would
+          #                            dial itself and log.Fatalf at startup
+          - git:
+              repoURL: git@github.com:BinMunawir/infra.git
+              revision: main
+              files:
+                - path: L2/services/*/service.yaml
 
   template:
     metadata:
       name: '{{.stage}}-{{.provider}}-{{.service}}'
       labels:
-        maal/stage: '{{.stage}}'
-        maal/provider: '{{.provider}}'
-        maal/service: '{{.service}}'
-        maal/wave: '{{.wave}}'
+        service/stage: '{{.stage}}'
+        service/provider: '{{.provider}}'
+        service/name: '{{.service}}'
+        service/wave: '{{.wave}}'
       annotations:
         argocd.argoproj.io/sync-wave: '{{.wave}}'
+        # The source repo, carried onto the Application so `kubectl get app -o
+        # jsonpath` can answer "where does this image come from" without
+        # reading the infra tree. Argo never clones it.
+        service/repo: '{{.repo}}'
       finalizers:
         - resources-finalizer.argocd.argoproj.io
     spec:
@@ -85,10 +86,11 @@ spec:
             releaseName: '{{.service}}'
             ignoreMissingValueFiles: true
             valueFiles:
-              # Chart defaults, then the service's values for this env. A
-              # service with no file gets chart defaults, which will not be a
-              # working deployment — `just check envs` lists the gaps.
-              - $values/L2/envs/{{.stage}}-{{.provider}}/{{.service}}.yaml
+              # Chart defaults, then the service's values for this env, which
+              # sit in the service's own directory. A service with no file for
+              # this env gets chart defaults, which will not be a working
+              # deployment — `just check envs` lists the gaps.
+              - $values/L2/services/{{.service}}/{{.stage}}-{{.provider}}.yaml
 
         - repoURL: git@github.com:BinMunawir/infra.git
           targetRevision: main
@@ -108,9 +110,14 @@ spec:
           # the drift this layer is least able to notice.
           #
           # The layers that hold or gate state keep prune:false: the platform
-          # (L1), the secret stores, and the edge. And no database is at risk
-          # either way — every Postgres this platform uses is external and
-          # outside the cluster's reach entirely.
+          # (L1), the secret stores, and the edge. L1 additionally cannot prune
+          # because five of its components ship CRDs, and deleting a CRD
+          # garbage-collects every custom resource of that kind CLUSTER-WIDE —
+          # including this layer's AuthorizationPolicies and ExternalSecrets.
+          # The blast radius of an L1 prune is not L1.
+          #
+          # And no database is at risk either way — every Postgres this platform
+          # uses is external and outside the cluster's reach entirely.
           #
           # To exempt one resource, annotate it:
           #   argocd.argoproj.io/sync-options: Prune=false
@@ -125,7 +132,7 @@ spec:
         managedNamespaceMetadata:
           labels:
             istio.io/dataplane-mode: ambient
-            maal/service: '{{.service}}'
+            service/name: '{{.service}}'
 
             # POD SECURITY ADMISSION — `restricted`, enforced.
             #

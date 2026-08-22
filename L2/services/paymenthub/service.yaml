@@ -1,0 +1,15 @@
+# L2/services/paymenthub/service.yaml — the identity of one Go service.
+#
+# See ../client/service.yaml for what this file is and how the catalog works.
+
+service: paymenthub
+namespace: paymenthub
+wave: "1"
+
+# Renamed from `maalstream_ph` on 2026-08-22. GitHub keeps a redirect from the
+# old name, so the old URL still resolves — which is exactly why this names the
+# new one explicitly rather than relying on it. The stale ../maalstream_ph
+# working directory is no longer a git repo; `just images` builds from the
+# basename of this URL, so it now uses ../paymenthub.
+repo: git@github.com:BinMunawir/paymenthub.git
+image: paymenthub

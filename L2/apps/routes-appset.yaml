@@ -1,13 +1,78 @@
 # L2/apps/routes-appset.yaml — the routing table.
 #
-# One Application per env, sourcing L2/routes/<stage>-<provider>/: the
-# HTTPRoutes that point the platform's edge at Maal services.
+# One Application per DEPENDENCY per env, sourcing
+# L2/deps/<app>/<stage>-<provider>/routes/. A route now lives beside the values
+# file that configures the backend it points at, so the hostname, the Service
+# name and the port that must agree are in one directory rather than in two
+# files at opposite ends of the tree.
 #
 # ─── what is NOT here ──────────────────────────────────────────────────────
 # The Gateway, its TLS listener and its certificate are L1's — see
 # L1/platform/edge-appset.yaml. This layer owns only the routes, each of which
-# names a Maal Service and therefore could not live anywhere else without the
-# platform layer depending on the application layer.
+# names a Service in this layer and therefore could not live anywhere else
+# without the platform layer depending on the application layer. That is the
+# Gateway API's own persona split: cluster operator owns Gateways, application
+# teams own Routes.
+#
+# ─── no Go service has a route yet ─────────────────────────────────────────
+# Both are Temporal workers with no inbound port at all — `client` runs,
+# `paymenthub` is parked — so this appset generates from ../deps only. The
+# moment a service does need to be reachable: create
+# L2/services/<name>/<stage>-<provider>/routes/, then add a second generator
+# block here matrixing the env cells against L2/services/*/service.yaml with
+# `{{.service}}` in place of `{{.app}}`.
+#
+# It is not there already because an Argo Application whose directory path does
+# not exist is a hard ComparisonError, not an empty sync — so a generator over
+# every service would demand that directory from services that will never have
+# one, and two permanently-erroring Applications teach everyone to stop reading
+# the dashboard.
+#
+# THE SAME CONSTRAINT APPLIES TO DEPS: every dep needs a
+# <stage>-<provider>/routes/ directory. If one genuinely has no route, put a
+# .gitkeep in it — Argo's directory source only reads .yaml/.yml/.json, so the
+# directory renders zero manifests and the Application syncs empty and green.
+#
+# ─── the naming rule ───────────────────────────────────────────────────────
+# Hostnames must be ONE label under the env's domain:
+#
+#     <name>.127.0.0.1.nip.io          ✓  covered by the wildcard
+#     <a>.<b>.127.0.0.1.nip.io         ✗  a TLS wildcard matches one label only
+#
+# Nesting needs a new SAN and a new listener in L1 for every level — see the
+# long note in L1/edge/dev-local/certificate.yaml. Use flat labels instead:
+# `web-temporal.127.0.0.1.nip.io`, not `web.temporal.127.0.0.1.nip.io`.
+#
+# ─── why nip.io ────────────────────────────────────────────────────────────
+# `*.127.0.0.1.nip.io` is real public DNS: nip.io answers any `<label>.<ip>`
+# name with that IP, so these hostnames resolve to 127.0.0.1 on any machine
+# with no /etc/hosts entry, no sudo, and no local resolver config. That matters
+# because the previous `*.internal.local` names resolved ONLY on a laptop whose
+# owner had edited /etc/hosts — which made the edge, the one path this layer
+# exists to provide, unusable for everyone else and unverifiable in CI.
+#
+# `.local` was also the wrong suffix on macOS specifically: it is reserved for
+# mDNS/Bonjour, so mDNSResponder can answer ahead of /etc/hosts.
+#
+# LOCAL ONLY. These names hardcode a loopback address and are meaningless off
+# this laptop. A cloud env adds a <stage>-<provider>/routes/ directory carrying
+# real hostnames in a zone it owns.
+#
+#   just urls         # prints the reachable URLs, read from these very routes
+#
+# ─── why every default is written out ──────────────────────────────────────
+# `parentRefs` and `rules` are ATOMIC lists in the HTTPRoute schema, and these
+# Applications sync with ServerSideApply=true. Argo therefore owns each list
+# whole, and the fields the CRD defaults — parentRefs[].group/.kind,
+# backendRefs[].group/.kind/.weight, and the implicit `matches` PathPrefix "/"
+# — land inside a subtree Argo believes it manages. A manifest that leaves them
+# out applies successfully and then reads OutOfSync forever, because Argo
+# compares what it owns in the cluster against a Git copy that is missing half
+# of it. `kubectl diff` shows nothing, which is what makes it confusing.
+#
+# So: state the defaults. That is the honest declarative position anyway — the
+# routing table is fully described in each route file rather than half there
+# and half in the API server's defaulting rules.
 #
 # Wave 2: after the services they route to. A route whose backend Service does
 # not exist yet reports ResolvedRefs=False, and there is no reason to look at
@@ -25,22 +90,28 @@ spec:
   goTemplateOptions: ["missingkey=error"]
 
   generators:
-    - git:
-        repoURL: git@github.com:BinMunawir/infra.git
-        revision: main
-        files:
-          - path: L2/envs/*.yaml
-          # Recursive glob — see the note in L1/platform/appset.yaml.
-          - path: L2/envs/*/*.yaml
-            exclude: true
+    - matrix:
+        generators:
+          - git:
+              repoURL: git@github.com:BinMunawir/infra.git
+              revision: main
+              files:
+                - path: L2/envs/*.yaml
+
+          - git:
+              repoURL: git@github.com:BinMunawir/infra.git
+              revision: main
+              files:
+                - path: L2/deps/*/dep.yaml
 
   template:
     metadata:
-      name: '{{.stage}}-{{.provider}}-routes'
+      name: '{{.stage}}-{{.provider}}-{{.app}}-routes'
       labels:
-        maal/stage: '{{.stage}}'
-        maal/provider: '{{.provider}}'
-        maal/wave: "2"
+        service/stage: '{{.stage}}'
+        service/provider: '{{.provider}}'
+        service/dep: '{{.app}}'
+        service/wave: "2"
       annotations:
         argocd.argoproj.io/sync-wave: "2"
       finalizers:
@@ -50,7 +121,7 @@ spec:
       source:
         repoURL: git@github.com:BinMunawir/infra.git
         targetRevision: main
-        path: L2/routes/{{.stage}}-{{.provider}}
+        path: L2/deps/{{.app}}/{{.stage}}-{{.provider}}/routes
         directory:
           recurse: false
       destination:

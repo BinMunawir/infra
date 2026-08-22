@@ -1,0 +1,36 @@
+# Temporal Web — dev-local.
+#
+# Workflow histories, which is the only way to debug a worker.
+#
+# Lives next to the chart values that enable the backend it points at
+# (../../dev-local.yaml `web.enabled`). Turning that off without deleting this
+# leaves a route whose backend does not resolve — which is exactly the pair this
+# directory keeps together.
+#
+# Every default is written out on purpose — see the note in
+# ../../../../apps/routes-appset.yaml.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: temporal-web
+  namespace: temporal
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: edge
+      namespace: edge
+      sectionName: https
+  hostnames:
+    - temporal.127.0.0.1.nip.io
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: temporal-web
+          port: 8080
+          weight: 1

@@ -39,7 +39,7 @@ contract := justfile_directory() / "L0" / l0_env / "contract.json"
 # report itself as broken while all seven of its components are green — that is
 # a lie in CI, and the kind that trains people to ignore the check.
 #
-# The project, not the platform.maal/stage label: that label is applied by the
+# The project, not the platform/stage label: that label is applied by the
 # component appsets only, so it misses `argocd` and `platform-root` — the two
 # whose failure matters most.
 l1_project := "platform"
@@ -365,15 +365,15 @@ verify layer="all":
     # L0's contract promises an address. This is the layer that has to make
     # something answer there — with no routes yet (those are L2's), a healthy
     # edge returns 404, and that is a pass.
-    r="$(kubectl -n maal-edge get certificate maal-edge-tls -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)"
-    [ "$r" = "True" ] && ok "certificate maal-edge-tls" || no "certificate maal-edge-tls not Ready — is {{l1_env}}-edge synced?"
+    r="$(kubectl -n edge get certificate edge-tls -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)"
+    [ "$r" = "True" ] && ok "certificate edge-tls" || no "certificate edge-tls not Ready — is {{l1_env}}-edge synced?"
 
-    r="$(kubectl -n maal-edge get gateway maal-edge -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}' 2>/dev/null)"
-    [ "$r" = "True" ] && ok "gateway maal-edge programmed" || no "gateway maal-edge not Programmed — is istiod's GatewayClass there?"
+    r="$(kubectl -n edge get gateway edge -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}' 2>/dev/null)"
+    [ "$r" = "True" ] && ok "gateway edge programmed" || no "gateway edge not Programmed — is istiod's GatewayClass there?"
 
     # The HTTPS port BY NAME — see the note on `edge-port`. Reading ports[0]
     # here would report the status port and call a broken edge healthy.
-    got_port="$(kubectl -n maal-edge get svc -l gateway.networking.k8s.io/gateway-name=maal-edge \
+    got_port="$(kubectl -n edge get svc -l gateway.networking.k8s.io/gateway-name=edge \
         -o jsonpath='{.items[0].spec.ports[?(@.name=="https")].nodePort}' 2>/dev/null)"
     if [ -z "$got_port" ]; then
         no "no gateway Service with an https port — istiod has not provisioned one"
@@ -449,8 +449,8 @@ verify layer="all":
     # that the Gateway is another layer's.
     kubectl get clustersecretstore maal-secret-store >/dev/null 2>&1 \
         && ok "ClusterSecretStore maal-secret-store (L1)" || no "ClusterSecretStore maal-secret-store absent — just verify l1"
-    kubectl -n maal-edge get gateway maal-edge >/dev/null 2>&1 \
-        && ok "Gateway maal-edge (L1)" || no "Gateway maal-edge absent — just verify l1"
+    kubectl -n edge get gateway edge >/dev/null 2>&1 \
+        && ok "Gateway edge (L1)" || no "Gateway edge absent — just verify l1"
 
     echo "── 3. generators ─────────────────────────────────"
     sets="$(kubectl -n {{argocd_ns}} get applicationsets \
@@ -472,17 +472,21 @@ verify layer="all":
     fi
 
     echo "── 4. expected applications ──────────────────────"
-    apps="$(grep -hoE '^[[:space:]]+- (app|service): [^[:space:]]+' \
-        "{{justfile_directory()}}/L2/apps/deps-appset.yaml" \
-        "{{justfile_directory()}}/L2/apps/services-appset.yaml" | awk '{print $3}' | sort -u)"
-    for a in $apps; do
+    # The catalogs ARE the filesystem, so this reads them the same way the
+    # ApplicationSets do. One Application per service; per dep, one for the
+    # chart plus one each for its routes and its secrets.
+    svcs="$(grep -h '^service:' "{{justfile_directory()}}"/L2/services/*/service.yaml | awk '{print $2}' | sort -u)"
+    deps="$(grep -h '^app:' "{{justfile_directory()}}"/L2/deps/*/dep.yaml | awk '{print $2}' | sort -u)"
+    for a in $svcs $deps; do
         kubectl -n {{argocd_ns}} get application "{{l2_env}}-$a" >/dev/null 2>&1 \
             && ok "application {{l2_env}}-$a" \
             || no "application {{l2_env}}-$a MISSING — the generator never produced it"
     done
-    for a in app-secrets routes; do
-        kubectl -n {{argocd_ns}} get application "{{l2_env}}-$a" >/dev/null 2>&1 \
-            && ok "application {{l2_env}}-$a" || no "application {{l2_env}}-$a MISSING"
+    for d in $deps; do
+        for k in routes secrets; do
+            kubectl -n {{argocd_ns}} get application "{{l2_env}}-$d-$k" >/dev/null 2>&1 \
+                && ok "application {{l2_env}}-$d-$k" || no "application {{l2_env}}-$d-$k MISSING"
+        done
     done
     kubectl -n {{argocd_ns}} get application maal-root >/dev/null 2>&1 \
         && ok "application maal-root" || no "application maal-root MISSING — run just up l2"
@@ -519,7 +523,9 @@ verify layer="all":
     # spec.replicas vs ready, NOT "are there pods". A service parked at
     # replicas: 0 is supposed to have none, and reading that as a failure is
     # what would make this check untrustworthy on a correct cluster.
-    for ns in maal-temporal maal-keycloak maal-business maal-stream-ph; do
+    # Derived from the catalogs, not hardcoded: adding a service directory
+    # under L2/services/ puts its namespace here with no edit to this file.
+    for ns in $(grep -h '^namespace:' {{justfile_directory()}}/L2/services/*/service.yaml {{justfile_directory()}}/L2/deps/*/dep.yaml | awk '{print $2}' | sort -u); do
         rows="$(kubectl -n "$ns" get deploy,statefulset \
             -o jsonpath='{range .items[*]}{.kind}{"/"}{.metadata.name}{"\t"}{.spec.replicas}{"\t"}{.status.readyReplicas}{"\n"}{end}' 2>/dev/null)"
         if [ -z "$rows" ]; then
@@ -547,7 +553,7 @@ verify layer="all":
     routes="$(kubectl get httproute -A \
         -o jsonpath='{range .items[*]}{.metadata.namespace}{"/"}{.metadata.name}{"\t"}{.status.parents[0].conditions[?(@.type=="Accepted")].status}{"\t"}{.status.parents[0].conditions[?(@.type=="ResolvedRefs")].status}{"\n"}{end}' 2>/dev/null)"
     if [ -z "$routes" ]; then
-        no "no HTTPRoutes — has {{l2_env}}-routes synced?"
+        no "no HTTPRoutes — have the {{l2_env}}-<dep>-routes applications synced?"
     else
         while IFS=$'\t' read -r name acc res; do
             [ -z "$name" ] && continue
@@ -625,14 +631,14 @@ status:
 
     echo
     echo "══ L1 — platform workloads ══════════════════════════"
-    for ns in istio-system cert-manager external-secrets maal-edge; do
+    for ns in istio-system cert-manager external-secrets edge; do
         printf -- '--- %s ---\n' "$ns"
         kubectl -n "$ns" get pods 2>/dev/null || echo "  (namespace not created yet)"
     done
 
     echo
     echo "══ L2 — product workloads ═══════════════════════════"
-    for ns in maal-temporal maal-keycloak maal-business maal-stream-ph; do
+    for ns in $(grep -h '^namespace:' {{justfile_directory()}}/L2/services/*/service.yaml {{justfile_directory()}}/L2/deps/*/dep.yaml | awk '{print $2}' | sort -u); do
         printf -- '--- %s ---\n' "$ns"
         kubectl -n "$ns" get pods 2>/dev/null || echo "  (namespace not created yet)"
     done
@@ -640,8 +646,8 @@ status:
     echo
     echo "══ the edge ═════════════════════════════════════════"
     echo "--- gateway + certificate (L1 owns these) ---"
-    kubectl -n maal-edge get gateway,certificate 2>/dev/null || echo "  (maal-edge not created yet)"
-    kubectl -n maal-edge get svc -l gateway.networking.k8s.io/gateway-name=maal-edge 2>/dev/null || true
+    kubectl -n edge get gateway,certificate 2>/dev/null || echo "  (edge not created yet)"
+    kubectl -n edge get svc -l gateway.networking.k8s.io/gateway-name=edge 2>/dev/null || true
     echo "--- routes (L2 owns these) ---"
     kubectl get httproute -A 2>/dev/null || echo "  (none)"
 
@@ -801,9 +807,19 @@ db-init:
     echo ">> databases and roles are in place for {{l2_env}}"
 
 # Build every service image and load it into kind (no registry needed locally)
-images: (image "client" "maal/business") (image "ledger" "maal/ledger") (image "maalstream_ph" "maal/stream-ph")
+images:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd {{justfile_directory()}}
+    # The catalog drives this: one directory under L2/services/ is one image.
+    # Adding a service needs no edit here.
+    for f in L2/services/*/service.yaml; do
+        repo=$(awk '/^repo: /{print $2}' "$f")
+        tag=$(awk '/^image: /{print $2}' "$f")
+        just image "$(basename "$repo" .git)" "$tag"
+    done
 
-# Build one service image and load it: `just image ledger maal/ledger`
+# Build one service image and load it: just image client client
 image repo tag:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -811,7 +827,7 @@ image repo tag:
     test -d "$dir" || { echo "!! no such service repo: $dir" >&2; exit 1; }
     if [ ! -f "$dir/Dockerfile" ]; then
         echo "!! {{repo}} has no Dockerfile." >&2
-        echo "   Copy ledger/Dockerfile and change the ./cmd/<entrypoint> target." >&2
+        echo "   Copy the client repo Dockerfile and change the ./cmd/<entrypoint> target." >&2
         echo "   The image must put binaries at /app/<name> with WORKDIR /app and" >&2
         echo "   USER 1001 — L2/charts/go-service assumes exactly that layout." >&2
         exit 1
@@ -823,13 +839,13 @@ image repo tag:
     echo "   Argo will report Synced and keep the OLD pods. Roll them:"
     echo "     just restart <service>"
 
-# Roll a service's pods onto a freshly loaded image: `just restart maal-business`
+# Roll a service's pods onto a freshly loaded image: just restart client
 #
 # Needed because `:dev` is a mutable tag — see the warning in
 # L2/charts/go-service/values.yaml. Cloud envs use immutable tags and never need
 # this: the values change is what triggers the rollout.
 #
-# Roll a service's pods onto a freshly loaded image: `just restart maal-business`
+# Roll a service's pods onto a freshly loaded image: just restart client
 restart service:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -864,11 +880,11 @@ edge-port:
     #!/usr/bin/env bash
     set -euo pipefail
     export KUBECONFIG=$(just _kubeconfig)
-    svc=$(kubectl -n maal-edge get svc -l gateway.networking.k8s.io/gateway-name=maal-edge \
+    svc=$(kubectl -n edge get svc -l gateway.networking.k8s.io/gateway-name=edge \
         -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
     test -n "$svc" || { echo "!! no gateway Service yet — has {{l1_env}}-edge synced? (just status)" >&2; exit 1; }
 
-    json=$(kubectl -n maal-edge get svc "$svc" -o json)
+    json=$(kubectl -n edge get svc "$svc" -o json)
 
     # BY NAME, NOT BY INDEX. istiod puts `status-port` (15021) FIRST on the
     # Service it provisions, so /spec/ports/0 is the readiness port, not HTTPS.
@@ -892,7 +908,7 @@ edge-port:
         echo ">> port $squat was holding 30080 — reassigning it"
     fi
 
-    kubectl -n maal-edge patch svc "$svc" --type=json -p "$ops"
+    kubectl -n edge patch svc "$svc" --type=json -p "$ops"
     echo ">> $svc https nodePort pinned to 30080 — the platform is now at https://<host>:8080"
     just urls
 
@@ -909,7 +925,7 @@ password:
 
 # The local root certificate, so a browser can trust the edge without warnings
 edge-ca:
-    @KUBECONFIG=$(just _kubeconfig) kubectl -n maal-edge get secret maal-edge-ca \
+    @KUBECONFIG=$(just _kubeconfig) kubectl -n edge get secret edge-ca \
         -o jsonpath='{.data.tls\.crt}' | base64 -d
 
 # Point your shell at this env's cluster: `eval $(just env)`
@@ -966,8 +982,10 @@ check what="all":
         command -v helm >/dev/null || { echo "!! helm not installed" >&2; return 1; }
         helm lint L2/charts/go-service || return 1
         local bad=0
-        for f in L2/envs/{{l2_env}}/maal-*.yaml; do
-            s=$(basename "$f" .yaml)
+        for d in L2/services/*/; do
+            s=$(basename "$d")
+            f="${d}{{l2_env}}.yaml"
+            [ -f "$f" ] || { printf '   %-20s %s\n' "$s" "no {{l2_env}} values — chart defaults"; continue; }
             printf '   %-20s' "$s"
             if helm template "$s" L2/charts/go-service -f "$f" >/dev/null 2>&1; then
                 echo "ok"
@@ -1015,13 +1033,36 @@ check what="all":
             END { flush() }
         ' envdir="$2" "$1"
     }
+    # L2 deps carry their identity in their own file, one per directory, with
+    # the keys at the top level — so this needs no first-wins guard and no
+    # template block to skip. Field 5 is the directory, which is also where the
+    # values file lives.
+    _catalog_files(){
+        local f
+        for f in L2/deps/*/dep.yaml; do
+            [ -e "$f" ] || continue
+            awk -v dir="$(dirname "$f")" '
+                /^app: /     { name=$2 }
+                /^chart: /   { chart=$2 }
+                /^repoURL: / { repo=$2 }
+                /^version: / { ver=$2 }
+                END { if (name != "" && chart != "" && repo != "" && ver != "")
+                          printf "%s\t%s\t%s\t%s\t%s\n", name, chart, repo, ver, dir }
+            ' "$f"
+        done
+    }
     _upstream(){
         command -v helm >/dev/null || { echo "!! helm not installed" >&2; return 1; }
         local bad=0 env values args name chart repo version envdir
         while IFS=$'\t' read -r name chart repo version envdir; do
             [ -z "$name" ] && continue
-            case "$envdir" in L1/envs) env="{{l1_env}}" ;; *) env="{{l2_env}}" ;; esac
-            values="$envdir/$env/$name.yaml"
+            # Two shapes: L1 still keeps values in a shared per-env directory,
+            # L2 deps keep theirs beside the dep.yaml that names them.
+            case "$envdir" in
+                L1/envs)   values="$envdir/{{l1_env}}/$name.yaml" ;;
+                L2/deps/*) values="$envdir/{{l2_env}}.yaml" ;;
+                *)         values="$envdir/{{l2_env}}/$name.yaml" ;;
+            esac
             printf '   %-18s %-12s' "$name" "$version"
             args=(template "$name" "$chart" --repo "$repo" --version "$version")
             # ignoreMissingValueFiles is set on every appset, so a component
@@ -1033,8 +1074,8 @@ check what="all":
                 echo "FAILED"; sed 's/^/       /' /tmp/maal-helm-err; bad=1
             fi
         done < <(
-            _catalog L1/platform/appset.yaml  L1/envs
-            _catalog L2/apps/deps-appset.yaml L2/envs
+            _catalog L1/platform/appset.yaml L1/envs
+            _catalog_files
         )
         return "$bad"
     }
@@ -1055,12 +1096,16 @@ check what="all":
                 test -f "L1/envs/$e/$c.yaml" || echo "   missing (chart defaults apply): L1/envs/$e/$c.yaml"
             done
         done
-        local apps
-        apps=$(grep -hoE '^\s+- (service|app): \S+' L2/apps/*.yaml | awk '{print $3}' | sort -u)
+        # L2's catalog IS the filesystem: one directory per service under
+        # L2/services/ and per dependency under L2/deps/. A directory with no
+        # values file for an env is the gap this reports.
+        local d n
         for envfile in L2/envs/*.yaml; do
             local e; e=$(basename "$envfile" .yaml)
-            for a in $apps; do
-                test -f "L2/envs/$e/$a.yaml" || echo "   missing (chart defaults apply): L2/envs/$e/$a.yaml"
+            for d in L2/services/*/ L2/deps/*/; do
+                [ -d "$d" ] || continue
+                n=$(basename "$d")
+                test -f "$d$e.yaml" || echo "   missing (chart defaults apply): $d$e.yaml"
             done
         done
         echo ">> env/catalog matrix checked"

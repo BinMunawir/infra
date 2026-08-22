@@ -1,7 +1,8 @@
 # go-service — the values contract.
 #
 # This file is the documentation. Every key below is the default; a service's
-# values file in L2/envs/<env>/<service>.yaml overrides only what differs.
+# values file in L2/services/<service>/<stage>-<provider>.yaml overrides only
+# what differs.
 #
 # The chart is built around three facts from the Go Service Standard
 # (client/blueprint.md):
@@ -23,7 +24,7 @@ image:
   # Registry-qualified in cloud (ECR/GAR). Empty registry + IfNotPresent is the
   # local flow: `docker build` then `kind load docker-image`, no registry at all.
   registry: ""
-  repository: maal/example
+  repository: example
   # MUTABLE TAG WARNING. `dev` is convenient locally and a trap everywhere else:
   # the Deployment spec does not change when the image behind the tag does, so
   # Argo reports Synced and the old pods keep running. Locally, `just restart
@@ -35,7 +36,7 @@ image:
 
 # ─── workloads ─────────────────────────────────────────────────────────────
 # One entry per `cmd/*` entrypoint you want running. The key becomes the
-# workload suffix: `maal-business` + `worker` -> Deployment maal-business-worker.
+# workload suffix: `client` + `worker` -> Deployment client-worker.
 #
 # `http.enabled` decides whether this workload gets a Service and HTTP probes.
 # A Temporal worker has no inbound port, so it gets neither — which is exactly
@@ -44,8 +45,8 @@ image:
 # PARKING: `replicas: 0` deploys the workload's config, Service and policies but
 # runs no pods. Use it when the manifests are right but the service repo is not
 # ready — the Application syncs green instead of advertising a crash loop as the
-# normal state. A service that cannot work at all is removed from the catalog in
-# L2/apps/services-appset.yaml instead.
+# normal state. A service that cannot work at all has its directory under
+# L2/services/ deleted instead — the catalog is the filesystem.
 #
 # Only long-running processes belong here. A `cmd/` that runs once and exits (a
 # workflow starter, a code generator, a dev harness) is a Job, not a Deployment
@@ -96,7 +97,7 @@ config:
   # env: dev here.
   env: dev
 
-  # Where the image expects its config directory. The ledger Dockerfile uses
+  # Where the image expects its config directory. The client Dockerfile uses
   # WORKDIR /app and copies config/*.yml to /app/config, and SERVICE__ROOT
   # defaults to ".", so /app/config is the path the binary reads.
   mountPath: /app/config
@@ -106,9 +107,9 @@ config:
   # Keys are PascalCase to match the cleanenv `yaml:` tags in config.go.
   values: {}
     # Service:
-    #   Name: maal_business
+    #   Name: client
     # Temporal:
-    #   HostPort: temporal-frontend.maal-temporal.svc.cluster.local:7233
+    #   HostPort: temporal-frontend.temporal.svc.cluster.local:7233
     #   Namespace: default
 
   # Plain env vars applied to every workload. Non-secret only.
@@ -136,7 +137,7 @@ secrets:
 
   # envVarName: remoteKey  (the key as it exists in the backing store)
   data: {}
-    # KEYCLOAK__ADMIN_TOKEN: maal/keycloak/admin-token
+    # KEYCLOAK__ADMIN_TOKEN: keycloak/admin-token
 
 # ─── database (external) ───────────────────────────────────────────────────
 # The cluster runs no database. Every Postgres is external and managed outside
@@ -193,7 +194,7 @@ migrations:
 # ─── mesh ──────────────────────────────────────────────────────────────────
 mesh:
   # Ambient enrolment is a namespace label, applied by Argo via
-  # managedNamespaceMetadata (see L2/services/appset.yaml) — not by this chart,
+  # managedNamespaceMetadata (see L2/apps/services-appset.yaml) — not by this chart,
   # because the namespace is not this chart's to own.
   #
   # A default-deny AuthorizationPolicy plus explicit allows. Ambient enforces
@@ -234,12 +235,12 @@ networkPolicy:
     # - from:
     #     - podSelector:
     #         matchLabels:
-    #           app.kubernetes.io/name: maal-business
+    #           app.kubernetes.io/name: client
 
   # Raw NetworkPolicy egress rules, appended after the DNS allow. What a
   # typical Go service here needs:
   #
-  #   - the Temporal frontend        in-cluster, namespace maal-temporal
+  #   - the Temporal frontend        in-cluster, namespace temporal
   #   - its external database        OUT of the cluster, so an ipBlock — there
   #                                  is no pod to select, and this is the rule
   #                                  that does not exist in a normal cluster
@@ -251,7 +252,7 @@ networkPolicy:
     # - to:
     #     - namespaceSelector:
     #         matchLabels:
-    #           kubernetes.io/metadata.name: maal-temporal
+    #           kubernetes.io/metadata.name: temporal
     #   ports:
     #     - protocol: TCP
     #       port: 7233
@@ -268,7 +269,7 @@ serviceAccount:
   name: ""
   annotations: {}   # IRSA / Workload Identity bindings go here in cloud envs
 
-# Matches the ledger Dockerfile's `USER 1001`. A service whose image runs as a
+# Matches the client Dockerfile's `USER 1001`. A service whose image runs as a
 # different uid must override this or the container will not start.
 podSecurityContext:
   runAsNonRoot: true

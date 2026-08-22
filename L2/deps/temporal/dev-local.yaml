@@ -1,6 +1,6 @@
 # Temporal — dev-local
 #
-# The workflow spine. Every capability in every Maal service is a Temporal
+# The workflow spine. Every capability in every Go service is a Temporal
 # workflow (blueprint.md §1), so nothing else works until this does.
 #
 # The upstream chart used to bundle Cassandra, Elasticsearch, Prometheus and
@@ -24,7 +24,7 @@
 #   CREATE DATABASE temporal_visibility OWNER temporal;
 #
 # The password comes from the store, never from here — see
-# ../../secrets/dev-local/temporal-db.yaml.
+# ./dev-local/secrets/db.yaml.
 
 server:
   replicaCount: 1
@@ -85,8 +85,8 @@ server:
     # "Namespace default is not found" — which reads like a config typo rather
     # than a missing object.
     #
-    # `default` because that is what maal-business and the Temporal SDK both
-    # assume (see ../../envs/dev-local/maal-business.yaml). Giving Maal its own
+    # `default` because that is what the client service and the Temporal SDK both
+    # assume (see ../../services/client/dev-local.yaml). Giving this platform its own
     # namespace is the right move before this is anything but dev, and it is a
     # two-sided change: this list and every service's Temporal.Namespace.
     #
@@ -99,7 +99,7 @@ server:
           retention: 3d
 
 # Reachable at https://temporal.127.0.0.1.nip.io:8080 through the edge Gateway
-# — see ../../edge/dev-local/routes.yaml. No /etc/hosts entry needed; nip.io
+# — see ./dev-local/routes/temporal-web.yaml. No /etc/hosts entry needed; nip.io
 # resolves that name to 127.0.0.1 through public DNS.
 web:
   enabled: true

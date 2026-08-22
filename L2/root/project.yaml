@@ -6,21 +6,23 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
-  description: "L2 — the Maal product: services, their databases, and the apps they run against"
+  description: "L2 — the product layer: Go services, their databases, and the third-party apps they run against"
 
   sourceRepos:
     - git@github.com:BinMunawir/infra.git
     - https://go.temporal.io/helm-charts
     - https://codecentric.github.io/helm-charts
-    # Hyperswitch is parked — removed from apps/deps-appset.yaml, not merely
-    # disabled. Its chart repos stay listed but commented so re-enabling is a
-    # catalog change plus uncommenting, not a rediscovery:
-    #   - https://juspay.github.io/hyperswitch-helm
-    #   - https://charts.bitnami.com/bitnami    # its bundled Redis
+    #
+    # A new dependency needs its chart repo listed here as well as a directory
+    # under ../deps/ — Argo rejects the sync otherwise. Services need nothing
+    # added: they all render from the local chart in this same repo.
 
-  # Namespace per service. A new service means a new entry here as well as in
-  # apps/services-appset.yaml — Argo fails the sync with a clear message if you
-  # add one and forget the other, which is the intended tripwire.
+  # Namespace per service. THIS IS THE ONE SHARED FILE A NEW SERVICE STILL
+  # TOUCHES. Everything else about a service lives in its own directory under
+  # ../services/<name>/, but a namespace is a grant, and a grant is not
+  # something a generator should be able to hand itself. Argo fails the sync
+  # with a clear message if you add a service directory and forget the entry
+  # here, which is the intended tripwire.
   destinations:
     # Where maal-root itself lives, and where it writes the four
     # ApplicationSets. WITHOUT THIS ENTRY maal-root cannot sync at all — Argo
@@ -28,26 +30,22 @@ spec:
     # not permitted in project 'maal'" and no L2 Application is ever generated.
     - server: https://kubernetes.default.svc
       namespace: argocd
+    # deps — one per directory under ../deps/
     - server: https://kubernetes.default.svc
-      namespace: maal-temporal
+      namespace: temporal
     - server: https://kubernetes.default.svc
-      namespace: maal-keycloak
+      namespace: keycloak
+
+    # services — one per directory under ../services/
     - server: https://kubernetes.default.svc
-      namespace: maal-hyperswitch
+      namespace: client
     - server: https://kubernetes.default.svc
-      namespace: maal-business
-    # NO maal-edge. The Gateway, its TLS listener and its certificate are
+      namespace: paymenthub
+
+    # NO `edge`. The Gateway, its TLS listener and its certificate are
     # platform-scoped and live in L1 (L1/edge/). L2 owns only the HTTPRoutes,
     # and each of those sits in the namespace of the service it fronts — which
     # is already listed here.
-    #
-    # Parked — maal-ledger is not in the service catalog (see
-    # ../apps/services-appset.yaml). Kept so re-enabling is a one-line catalog
-    # change; an unused destination grants nothing on its own.
-    - server: https://kubernetes.default.svc
-      namespace: maal-ledger
-    - server: https://kubernetes.default.svc
-      namespace: maal-stream-ph
 
   # THE BOUNDARY. L2 may not create cluster-scoped resources — no CRDs, no
   # ClusterRoles, no webhooks. That is why the Gateway API CRDs went into L1:

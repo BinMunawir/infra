@@ -69,10 +69,10 @@ spec:
     metadata:
       name: '{{.stage}}-{{.provider}}-{{.component}}'
       labels:
-        platform.maal/stage: '{{.stage}}'
-        platform.maal/provider: '{{.provider}}'
-        platform.maal/component: '{{.component}}'
-        platform.maal/wave: '{{.wave}}'
+        platform/stage: '{{.stage}}'
+        platform/provider: '{{.provider}}'
+        platform/component: '{{.component}}'
+        platform/wave: '{{.wave}}'
       annotations:
         argocd.argoproj.io/sync-wave: '{{.wave}}'
       finalizers:

@@ -1,0 +1,13 @@
+# L2/deps/keycloak/dep.yaml — the identity of one third-party dependency.
+#
+# See ../temporal/dep.yaml for what this file is and how the catalog works.
+
+app: keycloak
+chart: keycloakx
+repoURL: https://codecentric.github.io/helm-charts
+version: 7.2.3
+namespace: keycloak
+
+# Identity. The client service provisions organizations and users here through
+# its keycloak port.
+wave: "0"

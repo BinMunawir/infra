@@ -4,7 +4,7 @@ new workloads roll.
 
 DISABLED BY DEFAULT, and it must stay that way until the service publishes an
 image containing both the goose binary and internal/adapters/pg/migrations. The
-runtime images built today (see the ledger Dockerfile) copy only the compiled
+runtime images built today (see the client Dockerfile) copy only the compiled
 binary and config/*.yml, so this Job would run and fail.
 
 The usual fix is to publish the Dockerfile's build stage as a second tag and

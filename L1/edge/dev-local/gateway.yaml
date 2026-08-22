@@ -28,8 +28,8 @@
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
-  name: maal-edge
-  namespace: maal-edge
+  name: edge
+  namespace: edge
   annotations:
     # kind has no cloud load balancer, so a LoadBalancer Service would sit at
     # <pending> forever. NodePort is what the extraPortMapping in
@@ -65,7 +65,7 @@ spec:
           # cleanly every time.
           - group: ""
             kind: Secret
-            name: maal-edge-tls
+            name: edge-tls
       allowedRoutes:
         # Routes attach from the service namespaces they front, so each route
         # sits next to its own backend and needs no ReferenceGrant —
